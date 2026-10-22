@@ -68,7 +68,9 @@ The lesson generalises: damage tracking is not a feature, it is a discipline. An
 step that unconditionally marks geometry dirty silently reverts the whole
 pipeline to full-frame rendering.
 
-`examples/bench_surface.rs` measures both paths and is the regression guard.
+`cargo run --release -p clover-render --example bench_surface` measures both
+paths (7.0 ms full frame vs 0.160 ms hover at 3000x1700) and is the regression
+guard.
 
 ## 3. The display list is resolved, not deferred
 

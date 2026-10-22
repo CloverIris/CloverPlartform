@@ -123,6 +123,7 @@ tests/
 
 ```bash
 cargo test                     # unit tests for every crate
+cargo run --release -p clover-render --example bench_surface   # frame-cost guard
 cargo run -p clover-demo       # renders demo.png and prints timings
 ```
 
