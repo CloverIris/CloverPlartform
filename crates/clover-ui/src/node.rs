@@ -67,7 +67,44 @@ pub enum View {
         placeholder: String,
         /// Byte index of the caret inside `text`.
         caret: usize,
+        /// Text an input method is currently composing, not yet committed.
+        composition: Option<Composition>,
     },
+}
+
+/// Text an input method is composing.
+///
+/// The composition is *preview* text: it is displayed inline at the caret with an
+/// underline, but it is not part of `text` until committed. That is what lets an
+/// IME replace, cancel or confirm a phrase without the host ever seeing partial
+/// keystrokes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Composition {
+    pub text: String,
+    /// Caret inside `text`, in bytes.
+    pub cursor: usize,
+}
+
+/// Builds what a text field should display, plus the byte range of any
+/// composition inside it.
+pub fn text_input_display(
+    text: &str,
+    composition: Option<&Composition>,
+    caret: usize,
+) -> (String, Option<(usize, usize)>) {
+    let caret = caret.min(text.len());
+    match composition {
+        Some(composition) if !composition.text.is_empty() => {
+            let mut displayed = String::with_capacity(text.len() + composition.text.len());
+            displayed.push_str(&text[..caret]);
+            let start = displayed.len();
+            displayed.push_str(&composition.text);
+            let end = displayed.len();
+            displayed.push_str(&text[caret..]);
+            (displayed, Some((start, end)))
+        }
+        _ => (text.to_string(), None),
+    }
 }
 
 
@@ -318,7 +355,7 @@ impl Node {
     pub fn text_input(mut self, text: impl Into<String>, placeholder: impl Into<String>) -> Self {
         let text = text.into();
         let caret = text.len();
-        self.view = View::TextInput { text, placeholder: placeholder.into(), caret };
+        self.view = View::TextInput { text, placeholder: placeholder.into(), caret, composition: None };
         self.focusable = true;
         self
     }

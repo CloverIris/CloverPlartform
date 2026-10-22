@@ -491,6 +491,156 @@ pub unsafe extern "C" fn clover_direct_commit(surface: *mut CloverSurface, handl
     CloverResult::Ok
 }
 
+/// Sets the input-method composition on the focused text field.
+///
+/// Preview only: nothing is inserted until `clover_surface_ime_commit`.
+///
+/// # Safety
+/// `text_utf8` must be a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_ime_mark(
+    surface: *mut CloverSurface,
+    text_utf8: *const c_char,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if text_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let Ok(text) = CStr::from_ptr(text_utf8).to_str() else { return CloverResult::ParseError };
+    if surface.surface.ime_mark(text) {
+        CloverResult::Ok
+    } else {
+        CloverResult::UnknownHandle
+    }
+}
+
+/// Commits the pending composition into the focused text field.
+///
+/// # Safety
+/// `surface` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_ime_commit(surface: *mut CloverSurface) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if surface.surface.ime_commit() {
+        CloverResult::Ok
+    } else {
+        CloverResult::UnknownHandle
+    }
+}
+
+/// Discards the pending composition.
+///
+/// # Safety
+/// `surface` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_ime_cancel(surface: *mut CloverSurface) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if surface.surface.ime_cancel() {
+        CloverResult::Ok
+    } else {
+        CloverResult::UnknownHandle
+    }
+}
+
+/// Inserts already-committed text at the caret (the `insertText:` path).
+///
+/// # Safety
+/// `text_utf8` must be a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_ime_insert(
+    surface: *mut CloverSurface,
+    text_utf8: *const c_char,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if text_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let Ok(text) = CStr::from_ptr(text_utf8).to_str() else { return CloverResult::ParseError };
+    if surface.surface.ime_insert(text) {
+        CloverResult::Ok
+    } else {
+        CloverResult::UnknownHandle
+    }
+}
+
+/// Caret rectangle of the focused text field, in logical pixels.
+///
+/// # Safety
+/// `out` must be a valid pointer.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_caret_rect(
+    surface: *mut CloverSurface,
+    out: *mut CloverRect,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if out.is_null() {
+        return CloverResult::NullArgument;
+    }
+    match surface.surface.focused_caret_rect() {
+        Some(rect) => {
+            *out = CloverRect { x: rect.x, y: rect.y, w: rect.w, h: rect.h };
+            CloverResult::Ok
+        }
+        None => CloverResult::UnknownHandle,
+    }
+}
+
+/// Reads a text field's contents into `buffer`.
+///
+/// Returns bytes written excluding the NUL, `-1` when the buffer is too small, or
+/// `0` when the node is not a text field.
+///
+/// # Safety
+/// `name_utf8` must be NUL-terminated and `buffer` writable for `capacity` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_get_text(
+    surface: *mut CloverSurface,
+    name_utf8: *const c_char,
+    buffer: *mut c_char,
+    capacity: u32,
+) -> i32 {
+    let Some(surface) = surface.as_mut() else { return -1 };
+    if name_utf8.is_null() || buffer.is_null() || capacity == 0 {
+        return -1;
+    }
+    let Ok(name) = CStr::from_ptr(name_utf8).to_str() else { return -1 };
+    let Some(text) = surface.surface.text_of(name) else { return 0 };
+    let bytes = text.as_bytes();
+    if bytes.len() + 1 > capacity as usize {
+        return -1;
+    }
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer as *mut u8, bytes.len());
+    *buffer.add(bytes.len()) = 0;
+    bytes.len() as i32
+}
+
+/// Replaces a text field's contents and moves the caret to the end.
+///
+/// # Safety
+/// Both strings must be NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_set_text(
+    surface: *mut CloverSurface,
+    name_utf8: *const c_char,
+    text_utf8: *const c_char,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if name_utf8.is_null() || text_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let (Ok(name), Ok(text)) = (
+        CStr::from_ptr(name_utf8).to_str(),
+        CStr::from_ptr(text_utf8).to_str(),
+    ) else {
+        return CloverResult::ParseError;
+    };
+    if surface.surface.set_text(name, text) {
+        CloverResult::Ok
+    } else {
+        CloverResult::UnknownHandle
+    }
+}
+
 /// Registers an image from a PNG file and returns its handle, or 0 on failure.
 ///
 /// # Safety

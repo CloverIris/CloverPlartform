@@ -407,6 +407,132 @@ impl Surface {
         found
     }
 
+    /// Sets the input-method composition on the focused text field.
+    ///
+    /// The composition is preview text: it renders inline with an underline and
+    /// only becomes part of the field on [`Self::ime_commit`].
+    pub fn ime_mark(&mut self, text: impl Into<String>) -> bool {
+        let text = text.into();
+        let mut bounds = Rect::ZERO;
+        let mut changed = false;
+        if let Some(node) = self.focused_input_mut() {
+            if let View::TextInput { composition, .. } = &mut node.view {
+                let cursor = text.len();
+                *composition = Some(clover_ui::node::Composition { text, cursor });
+                bounds = node.bounds;
+                changed = true;
+            }
+        }
+        if changed {
+            self.tree.damage().add(bounds);
+        }
+        changed
+    }
+
+    /// Clears the composition without inserting anything.
+    pub fn ime_cancel(&mut self) -> bool {
+        let mut bounds = Rect::ZERO;
+        let mut changed = false;
+        if let Some(node) = self.focused_input_mut() {
+            if let View::TextInput { composition, .. } = &mut node.view {
+                if composition.take().is_some() {
+                    bounds = node.bounds;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.tree.damage().add(bounds);
+        }
+        changed
+    }
+
+    /// Commits the composition into the field.
+    pub fn ime_commit(&mut self) -> bool {
+        let Some(focused) = self.tree.focus() else { return false };
+        let mut committed = None;
+        if let Some(node) = self.tree.node_mut(focused) {
+            if let View::TextInput { text, caret, composition, .. } = &mut node.view {
+                if let Some(composition) = composition.take() {
+                    let position = (*caret).min(text.len());
+                    text.insert_str(position, &composition.text);
+                    *caret = position + composition.text.len();
+                    committed = Some(node.name.clone());
+                }
+            }
+        }
+        let Some(name) = committed else { return false };
+        let bounds = self.tree.node(focused).map(|node| node.bounds).unwrap_or(Rect::ZERO);
+        self.tree.damage().add(bounds);
+        if let Some(name) = name {
+            self.pending_actions.push(format!("text:{name}"));
+        }
+        true
+    }
+
+    /// Inserts committed text at the caret, clearing any composition.
+    ///
+    /// This is the path a platform's `insertText:` takes: the IME has already
+    /// resolved the characters, so no composition state is involved.
+    pub fn ime_insert(&mut self, value: impl AsRef<str>) -> bool {
+        let value = value.as_ref();
+        if value.is_empty() {
+            return false;
+        }
+        let Some(focused) = self.tree.focus() else { return false };
+        let mut name = None;
+        let mut bounds = Rect::ZERO;
+        let mut inserted = false;
+        if let Some(node) = self.tree.node_mut(focused) {
+            if let View::TextInput { text, caret, composition, .. } = &mut node.view {
+                composition.take();
+                let position = (*caret).min(text.len());
+                text.insert_str(position, value);
+                *caret = position + value.len();
+                name = node.name.clone();
+                bounds = node.bounds;
+                inserted = true;
+            }
+        }
+        if !inserted {
+            return false;
+        }
+        self.tree.damage().add(bounds);
+        if let Some(name) = name {
+            self.pending_actions.push(format!("text:{name}"));
+        }
+        true
+    }
+
+    /// Caret rectangle of the focused text field, in logical pixels.
+    ///
+    /// Hosts use this to place the IME candidate window.
+    pub fn focused_caret_rect(&self) -> Option<Rect> {
+        let focused = self.tree.focus()?;
+        let node = self.tree.node(focused)?;
+        let View::TextInput { text, caret, composition, .. } = &node.view else {
+            return None;
+        };
+        let (displayed, range) = clover_ui::node::text_input_display(text, composition.as_ref(), *caret);
+        let caret_byte = range.map(|(_, end)| end).unwrap_or((*caret).min(displayed.len()));
+        let prefix = &displayed[..caret_byte.min(displayed.len())];
+        let font_px = node.style.font_size.max(1.0);
+        let line_height = self.renderer.text.line_height(font_px);
+        let content = node.style.padding.deflate(node.bounds);
+        let x = content.x + self.renderer.text.line_width(prefix, font_px);
+        let y = content.y + ((content.h - line_height) * 0.5).max(0.0);
+        Some(Rect::new(x, y, 1.0, line_height))
+    }
+
+    fn focused_input_mut(&mut self) -> Option<&mut Node> {
+        let focused = self.tree.focus()?;
+        let node = self.tree.node_mut(focused)?;
+        match node.view {
+            View::TextInput { .. } => Some(node),
+            _ => None,
+        }
+    }
+
     /// Pops the next action raised by input, if any.
     pub fn take_action(&mut self) -> Option<String> {
         if self.pending_actions.is_empty() {
@@ -605,6 +731,61 @@ mod tests {
         while surface.take_action().is_some() {}
         press(&mut surface, 0x0D); // enter
         assert_eq!(surface.take_action().as_deref(), Some("submit:search"));
+    }
+
+    #[test]
+    fn ime_composition_is_preview_then_committed() {
+        let root = node::panel().child(node::text_input("", "Search").name("field"));
+        let mut surface = Surface::new(root, 200.0, 60.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        surface.tree_mut().focus_next(false);
+
+        assert!(surface.ime_mark("zhang"));
+        assert_eq!(surface.text_of("field").as_deref(), Some(""), "composition is not committed");
+        assert!(surface.focused_caret_rect().is_some(), "candidate window needs a caret rect");
+
+        assert!(surface.ime_commit());
+        assert_eq!(surface.text_of("field").as_deref(), Some("zhang"));
+        assert_eq!(surface.take_action().as_deref(), Some("text:field"));
+    }
+
+    #[test]
+    fn ime_cancel_drops_the_composition() {
+        let root = node::panel().child(node::text_input("abc", "").name("field"));
+        let mut surface = Surface::new(root, 200.0, 60.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        surface.tree_mut().focus_next(false);
+
+        assert!(surface.ime_mark("xyz"));
+        assert!(surface.ime_cancel());
+        assert_eq!(surface.text_of("field").as_deref(), Some("abc"));
+        assert_eq!(surface.take_action(), None, "cancelling is not a change event");
+    }
+
+    #[test]
+    fn ime_insert_commits_direct_text() {
+        let root = node::panel().child(node::text_input("ab", "").name("field"));
+        let mut surface = Surface::new(root, 200.0, 60.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        surface.tree_mut().focus_next(false);
+
+        surface.ime_mark("ignored");
+        assert!(surface.ime_insert("图层"));
+        assert_eq!(surface.text_of("field").as_deref(), Some("ab图层"));
+        assert_eq!(surface.take_action().as_deref(), Some("text:field"));
+    }
+
+    #[test]
+    fn ime_without_focus_is_a_no_op() {
+        let root = node::panel().child(node::text_input("", "").name("field"));
+        let mut surface = Surface::new(root, 200.0, 60.0, 1.0).expect("system font required");
+        assert!(!surface.ime_mark("x"));
+        assert!(!surface.ime_commit());
+        assert!(!surface.ime_insert("x"));
+        assert!(surface.focused_caret_rect().is_none());
     }
 
     #[test]

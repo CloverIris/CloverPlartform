@@ -1016,10 +1016,11 @@ mod tests {
         .unwrap();
         let field = &page.children[0];
         match &field.view {
-            node::View::TextInput { text, placeholder, caret } => {
+            node::View::TextInput { text, placeholder, caret, composition } => {
                 assert_eq!(text, "brush");
                 assert_eq!(placeholder, "Search");
                 assert_eq!(*caret, 5);
+                assert!(composition.is_none(), "fresh fields have no composition");
             }
             other => panic!("expected a text input, got {other:?}"),
         }

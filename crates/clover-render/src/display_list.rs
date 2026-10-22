@@ -194,28 +194,53 @@ fn walk(
                 out.push(DrawCmd::Image { rect: fitted, image: Arc::clone(image), clip, opacity: 1.0 });
             }
         }
-        View::TextInput { text: value, placeholder, caret } => {
+        View::TextInput { text: value, placeholder, caret, composition } => {
             let content_box = node.style.padding.deflate(node.bounds).scale(scale);
             let font_px = (node.style.font_size * scale).max(1.0);
-            let empty = value.is_empty();
-            let shown: &str = if empty { placeholder } else { value };
+            let empty = value.is_empty() && composition.is_none();
+            let (displayed, composition_range) =
+                clover_ui::node::text_input_display(value, composition.as_ref(), *caret);
+            let shown: &str = if empty { placeholder } else { displayed.as_str() };
             let color = if empty {
                 node.style.text_color.scale_alpha(0.55)
             } else {
                 node.style.text_color
             };
+            let line_height = text.line_height(font_px);
+            let baseline = content_box.y + ((content_box.h - line_height) * 0.5).max(0.0)
+                + text.ascent(font_px);
             if !shown.is_empty() {
-                let baseline = content_box.y + ((content_box.h - text.line_height(font_px)) * 0.5).max(0.0)
-                    + text.ascent(font_px);
                 let run = text.shape(shown, font_px, content_box.x, baseline);
                 if !run.is_empty() {
                     out.push(DrawCmd::Text { run: Arc::new(run), color: with_opacity(color), clip });
                 }
             }
-            // Caret, only while focused: a 1px bar at the caret offset.
+
+            // Composition preview gets an underline, the conventional IME cue.
+            if let Some((start, end)) = composition_range {
+                let left = content_box.x + text.line_width(&shown[..start.min(shown.len())], font_px);
+                let right = content_box.x + text.line_width(&shown[..end.min(shown.len())], font_px);
+                let underline = Rect::new(
+                    left,
+                    baseline + 2.0 * scale,
+                    (right - left).max(1.0),
+                    (1.5 * scale).max(1.0),
+                );
+                out.push(DrawCmd::RoundedRect {
+                    rect: underline,
+                    radius: 0.0,
+                    color: with_opacity(node.style.text_color),
+                    clip,
+                });
+            }
+
+            // Caret, only while focused: 1px bar at the caret offset, which lands
+            // after the composition while one is active.
             if node.state.focused {
-                let prefix = &value[..(*caret).min(value.len())];
-                let caret_x = content_box.x + text.line_width(prefix, font_px);
+                let caret_byte = composition_range.map(|(_, end)| end).unwrap_or_else(|| {
+                    (*caret).min(value.len())
+                });
+                let caret_x = content_box.x + text.line_width(&shown[..caret_byte.min(shown.len())], font_px);
                 let caret_top = content_box.y + 2.0 * scale;
                 let caret_height = (content_box.h - 4.0 * scale).max(font_px);
                 out.push(DrawCmd::RoundedRect {

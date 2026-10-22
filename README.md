@@ -23,7 +23,7 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 
 ![A .cui document rendered by the framework](docs/cui.png)
 
-> Status: **0.9 — real text engine**. The pipeline works end to end (tree →
+> Status: **0.10 — input method support**. The pipeline works end to end (tree →
 > layout → display list → tile-parallel raster → frame), both authoring
 > front-ends produce the same tree, layout supports flex-style `Fill`, text
 > wraps, and keyboard focus is routed. Styles, templates, bindings and animation
@@ -79,6 +79,10 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 * **Editable text fields.** `<TextBox>` supports focus, caret, typing,
   backspace/delete, arrows, Home/End and Enter-to-submit, and reports
   `text:<name>` / `submit:<name>` actions.
+* **Input methods.** Composing text (Chinese, Japanese, Korean) is previewed
+  inline with an underline and only committed on confirmation. The platform's
+  input client drives it; the candidate window anchors to the framework's caret
+  rectangle.
 * **Scrolling.** Vertical scroll containers (`ScrollViewer`, `Node::scrollable`)
   clamp their offset against the laid-out content and paint a scrollbar. Wheel
   events route to the nearest scrollable ancestor.

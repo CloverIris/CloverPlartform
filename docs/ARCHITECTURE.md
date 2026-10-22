@@ -212,8 +212,30 @@ The host learns about edits through actions (`text:<name>`, `submit:<name>`) and
 reads the value back with `clover_surface_get_text`. That keeps the ownership
 clear: the framework holds transient editing state, the host holds the meaning.
 
-Known limits: no selection, no clipboard, no IME, no horizontal scrolling of
-long contents, and the caret does not blink.
+### Input methods
+
+Composing text is a three-state cycle, and the state lives in the tree:
+
+| platform call | framework call | effect |
+|---|---|---|
+| `setMarkedText:` | `ime_mark` | preview inserted at the caret, underlined |
+| `insertText:` | `ime_insert` | already-resolved text inserted, composition cleared |
+| `unmarkText` | `ime_cancel` | preview dropped |
+
+The composition is *never* part of the field's `text` until committed, which is
+what lets an IME replace or abandon a phrase without the host seeing partial
+keystrokes. The caret, the underline and the candidate-window anchor all read the
+same composed string, so they cannot disagree.
+
+On macOS the adapter implements `NSTextInputClient` on a shared `CloverImeView`
+base: `interpretKeyEvents:` routes keys through the system input source, and
+`doCommandBySelector:` maps editing commands back onto the framework's
+virtual-key path so there is still only one editing implementation.
+
+Known limits: no selection, no clipboard, no bidi run reordering, no horizontal
+scrolling of long contents, the caret does not blink, and `markedRange` /
+`selectedRange` report nothing — an IME that asks where the marked text sits gets
+no answer, so candidate placement relies on the caret rectangle alone.
 
 ## 10. Actions
 

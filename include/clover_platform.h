@@ -238,6 +238,23 @@ int32_t clover_surface_get_text(clover_surface *surface, const char *name_utf8, 
 clover_result clover_surface_set_text(clover_surface *surface, const char *name_utf8,
                                       const char *text_utf8);
 
+/*
+ * Input methods (IME)
+ * -------------------
+ * A text field can show *preview* text from an input method before it is
+ * committed. The platform adapter implements its native input client and maps:
+ *
+ *   setMarkedText   -> clover_surface_ime_mark      (preview, underlined)
+ *   insertText      -> clover_surface_ime_insert    (already resolved)
+ *   unmarkText      -> clover_surface_ime_cancel
+ *   candidate popup -> clover_surface_caret_rect    (logical pixels)
+ */
+clover_result clover_surface_ime_mark(clover_surface *surface, const char *text_utf8);
+clover_result clover_surface_ime_commit(clover_surface *surface);
+clover_result clover_surface_ime_cancel(clover_surface *surface);
+clover_result clover_surface_ime_insert(clover_surface *surface, const char *text_utf8);
+clover_result clover_surface_caret_rect(clover_surface *surface, clover_rect *out);
+
 /* Registers a PNG image and returns its handle, or 0 on failure. */
 uint64_t clover_surface_add_image_png(clover_surface *surface, const char *path_utf8);
 
