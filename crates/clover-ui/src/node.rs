@@ -93,8 +93,14 @@ pub enum Widget {
     CheckBox { checked: bool },
     /// Drop-down list; the popup lives in the overlay.
     ComboBox { items: Vec<String>, selected: usize, open: bool },
-    /// Scrollbar thumb over a track.
-    ScrollBar { horizontal: bool, offset: f32, viewport: f32, extent: f32 },
+    /// Scrollbar thumb over a track. `target` names the container it scrolls.
+    ScrollBar {
+        horizontal: bool,
+        offset: f32,
+        viewport: f32,
+        extent: f32,
+        target: Option<String>,
+    },
 }
 
 impl Widget {
@@ -581,11 +587,23 @@ impl Node {
     }
 
     /// Nearest ancestor of `id` (inclusive) carrying a widget.
+    ///
+    /// This has to check ancestry, not "any widget in the subtree": a click on a
+    /// combo popup row must not be attributed to the combo box that opened it.
     pub fn find_widget(&self, id: NodeId) -> Option<NodeId> {
-        if self.widget.is_some() {
-            return Some(self.id);
+        fn walk(node: &Node, target: NodeId, current: Option<NodeId>) -> Option<Option<NodeId>> {
+            let current = if node.widget.is_some() { Some(node.id) } else { current };
+            if node.id == target {
+                return Some(current);
+            }
+            for child in &node.children {
+                if let Some(found) = walk(child, target, current) {
+                    return Some(found);
+                }
+            }
+            None
         }
-        self.children.iter().find_map(|child| child.find_widget(id))
+        walk(self, id, None).flatten()
     }
 
     /// Nearest ancestor of `id` (inclusive) that is a drag handle.
@@ -781,7 +799,7 @@ pub fn combo(name: &str, items: Vec<String>, selected: usize) -> Node {
 pub fn scrollbar(name: &str, horizontal: bool, offset: f32, viewport: f32, extent: f32) -> Node {
     let mut node = Node::new();
     node.name = Some(name.to_string());
-    node.widget = Some(Widget::ScrollBar { horizontal, offset, viewport, extent });
+    node.widget = Some(Widget::ScrollBar { horizontal, offset, viewport, extent, target: None });
     node.style.cursor = if horizontal {
         crate::style::Cursor::ResizeHorizontal
     } else {
@@ -937,12 +955,36 @@ impl UiTree {
 
     /// Finds a node by id.
     pub fn node(&self, id: NodeId) -> Option<&Node> {
-        self.root.find(id)
+        // The overlay is a second root; looking only at the page would make every
+        // node inside a popup invisible to input handling.
+        self.root
+            .find(id)
+            .or_else(|| self.overlay.as_deref().and_then(|overlay| overlay.find(id)))
     }
 
     /// Finds a node by id, mutably.
     pub fn node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
-        self.root.find_mut(id)
+        if self.root.find(id).is_some() {
+            return self.root.find_mut(id);
+        }
+        self.overlay.as_deref_mut().and_then(|overlay| overlay.find_mut(id))
+    }
+
+    /// Sets a text node's content by name.
+    pub fn set_label(&mut self, name: &str, value: &str) -> bool {
+        let Some(id) = self.named(name).map(|node| node.id) else { return false };
+        let Some(node) = self.node_mut(id) else { return false };
+        if let View::Text(text) = &mut node.view {
+            if text == value {
+                return false;
+            }
+            *text = value.to_string();
+            let bounds = node.bounds;
+            self.damage.add(bounds);
+            true
+        } else {
+            false
+        }
     }
 
     /// Finds a node by `x:Name`.
@@ -1132,12 +1174,21 @@ impl UiTree {
     /// file has made.
     /// Nearest ancestor of `id` (inclusive) that is a drag handle.
     pub fn find_drag_ancestor(&self, id: NodeId) -> Option<(NodeId, &str)> {
-        self.root.find_drag_ancestor(id)
+        self.root.find_drag_ancestor(id).or_else(|| {
+            self.overlay
+                .as_deref()
+                .and_then(|overlay| overlay.find_drag_ancestor(id))
+        })
     }
 
     /// Nearest ancestor of `id` (inclusive) carrying a widget.
+    ///
+    /// Both roots are searched: the overlay is a separate subtree, so a hit inside
+    /// a popup would otherwise never find the node that carries its widget.
     pub fn find_widget(&self, id: NodeId) -> Option<NodeId> {
-        self.root.find_widget(id)
+        self.root
+            .find_widget(id)
+            .or_else(|| self.overlay.as_deref().and_then(|overlay| overlay.find_widget(id)))
     }
 
     /// Replaces the overlay root. Pass `None` to remove it.

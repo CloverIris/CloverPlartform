@@ -520,7 +520,7 @@ fn paint_widget(
             push_tick(out, (cx - w, cy - w * 0.5), (cx, cy + w * 0.6), 1.4 * scale, chevron, clip);
             push_tick(out, (cx, cy + w * 0.6), (cx + w, cy - w * 0.5), 1.4 * scale, chevron, clip);
         }
-        Widget::ScrollBar { horizontal, offset, viewport, extent } => {
+        Widget::ScrollBar { horizontal, offset, viewport, extent, .. } => {
             let bar_radius = radius.min(rect.w.min(rect.h) * 0.5);
             out.push(DrawCmd::RoundedRect { rect, radius: bar_radius, color: track, clip });
             let span = extent.max(f32::EPSILON);

@@ -889,6 +889,33 @@ pub unsafe extern "C" fn clover_surface_create_from_cui(
     Box::into_raw(Box::new(CloverSurface { surface, direct: Vec::new(), pending: Vec::new() }))
 }
 
+/// Replaces a text node's content by `x:Name`.
+///
+/// # Safety
+/// Both strings must be NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_set_label(
+    surface: *mut CloverSurface,
+    name_utf8: *const c_char,
+    text_utf8: *const c_char,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if name_utf8.is_null() || text_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let (Ok(name), Ok(text)) = (
+        CStr::from_ptr(name_utf8).to_str(),
+        CStr::from_ptr(text_utf8).to_str(),
+    ) else {
+        return CloverResult::ParseError;
+    };
+    if surface.surface.set_label(name, text) {
+        CloverResult::Ok
+    } else {
+        CloverResult::UnknownHandle
+    }
+}
+
 /// Registers an image from a PNG file and returns its handle, or 0 on failure.
 ///
 /// # Safety

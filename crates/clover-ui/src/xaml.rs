@@ -733,7 +733,11 @@ fn build(
             let offset = xml.attr_f32("Offset").unwrap_or(0.0);
             let viewport = xml.attr_f32("Viewport").unwrap_or(100.0);
             let extent = xml.attr_f32("Extent").unwrap_or(100.0);
-            node::scrollbar(name, horizontal, offset, viewport, extent)
+            let mut bar = node::scrollbar(name, horizontal, offset, viewport, extent);
+            if let Some(node::Widget::ScrollBar { target, .. }) = &mut bar.widget {
+                *target = xml.attr("Target").map(str::to_string);
+            }
+            bar
         }
         "path" | "icon" => {
             let data = xml
@@ -1322,7 +1326,7 @@ mod tests {
             other => panic!("expected a combo, got {other:?}"),
         }
         match &page.children[3].widget {
-            Some(node::Widget::ScrollBar { horizontal, offset, viewport, extent }) => {
+            Some(node::Widget::ScrollBar { horizontal, offset, viewport, extent, .. }) => {
                 assert!(*horizontal);
                 assert_eq!((*offset, *viewport, *extent), (10.0, 50.0, 200.0));
             }

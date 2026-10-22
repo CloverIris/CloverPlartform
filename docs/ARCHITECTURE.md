@@ -183,6 +183,21 @@ its colours, not its mechanics.
 `MinWidth`/`MaxWidth`/`MinHeight`/`MaxHeight` were implemented long ago but never
 applied by the layout pass — they are now, which docking will need next.
 
+Three bugs of the same family surfaced while making the combo popup work, and all
+three had the same shape: **the overlay is a second root, and lookups only walked
+the page tree.**
+
+- `find_widget` ignored the id it was given and returned the first widget in the
+  tree, so clicking a popup row was attributed to the combo box that opened it.
+- `find_action_ancestor` and `node(id)` only searched the page, so no node inside
+  a popup could ever be recognised.
+- Scroll offsets are applied during layout, so changing one without setting
+  `layout_dirty` moved the thumb but not the content — true for both the
+  scrollbar and the wheel.
+
+The rule that came out of it: *when a second tree exists, every lookup helper has
+to know about it, and every state change has to declare which pass consumes it.*
+
 ## 5b1. Vector paths
 
 Icons cannot be bitmaps: the toolbar draws at 1x and 2x, and an exported PNG is

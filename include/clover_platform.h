@@ -186,6 +186,10 @@ clover_result clover_surface_wheel(clover_surface *surface, float x, float y, fl
 /* Returns bytes written excluding the NUL, 0 when empty, -1 on error. */
 int32_t clover_surface_take_action(clover_surface *surface, char *buffer, uint32_t capacity);
 
+/* Replaces a text node's content by x:Name. */
+clover_result clover_surface_set_label(clover_surface *surface, const char *name_utf8,
+                                       const char *text_utf8);
+
 /* Shows or hides a node by x:Name and repaints it. */
 clover_result clover_surface_set_visible(clover_surface *surface, const char *name_utf8,
                                          bool visible);

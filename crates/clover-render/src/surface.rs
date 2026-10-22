@@ -166,6 +166,8 @@ pub struct Surface {
     widget_drag: Option<NodeId>,
     /// Widget pressed and waiting for release to act (checkbox, combo).
     widget_press: Option<NodeId>,
+    /// Open combo box: the node and its name, so the popup can be rebuilt.
+    combo: Option<(NodeId, String)>,
 }
 
 impl Surface {
@@ -183,6 +185,7 @@ impl Surface {
             drag: None,
             widget_drag: None,
             widget_press: None,
+            combo: None,
         };
         surface.resize(width, height, scale);
         Some(surface)
@@ -590,6 +593,11 @@ impl Surface {
         true
     }
 
+    /// Updates a text node's content, e.g. a status readout.
+    pub fn set_label(&mut self, name: &str, value: &str) -> bool {
+        self.tree.set_label(name, value)
+    }
+
     /// Cursor the host should show at a point, in logical pixels.
     pub fn cursor_at(&self, x: f32, y: f32) -> clover_ui::style::Cursor {
         self.tree.cursor_at(clover_core::Point::new(x, y))
@@ -630,7 +638,7 @@ impl Surface {
                 *value = *min + (*max - *min) * t;
                 self.tree.damage().add(bounds);
             }
-            Some(clover_ui::node::Widget::ScrollBar { horizontal, offset, viewport, extent }) => {
+            Some(clover_ui::node::Widget::ScrollBar { horizontal, offset, viewport, extent, .. }) => {
                 let span = (*extent - *viewport).max(0.0);
                 let (length, start, position_along) = if *horizontal {
                     (bounds.w, bounds.x, position.x)
@@ -648,8 +656,29 @@ impl Surface {
         }
     }
 
-    /// Emits the `change:` action for a widget that was dragged.
+    /// Emits the `change:` action for a widget that was dragged, and applies the
+    /// widget's own effect first (a scrollbar moves the container it names).
     fn emit_widget_change(&mut self, id: NodeId) {
+        let mut target = None;
+        let mut offset = 0.0;
+        if let Some(node) = self.tree.node(id) {
+            if let Some(clover_ui::node::Widget::ScrollBar { target: name, offset: value, .. }) =
+                node.widget.as_ref()
+            {
+                target = name.clone();
+                offset = *value;
+            }
+        }
+        if let Some(name) = target {
+            if let Some(container) = self.tree.named_mut(&name) {
+                container.scroll.offset = offset;
+                let bounds = container.bounds;
+                self.tree.damage().add(bounds);
+                // The offset is applied while arranging children, so the layout
+                // pass has to run again or the content never moves.
+                self.tree.invalidate_layout();
+            }
+        }
         if let Some(action) = self.tree.node(id).and_then(|node| node.widget_action()) {
             self.pending_actions.push(action);
         }
@@ -669,7 +698,129 @@ impl Surface {
             _ => {}
         }
         self.tree.damage().add(bounds);
+
+        let mut open = false;
+        let mut is_combo = false;
+        if let Some(clover_ui::node::Widget::ComboBox { open: toggled, .. }) =
+            self.tree.node(id).and_then(|node| node.widget.as_ref())
+        {
+            is_combo = true;
+            open = *toggled;
+        }
+        if is_combo {
+            // Opening or dismissing the list is not a value change; only choosing
+            // an item is, and that path goes through `handle_internal`.
+            if let Some(name) = self.tree.node(id).and_then(|node| node.name.clone()) {
+                if open {
+                    self.open_combo(id, &name);
+                } else {
+                    self.combo = None;
+                    self.tree.set_overlay(None);
+                }
+            }
+            return;
+        }
         self.emit_widget_change(id);
+    }
+
+    /// Whether the hit chain reaches into the popup currently on screen.
+    fn hit_is_inside_popup(&self, chain: &[NodeId]) -> bool {
+        let Some(overlay) = self.tree.overlay() else { return false };
+        let overlay_id = overlay.id;
+        chain.iter().any(|id| *id == overlay_id)
+    }
+
+    /// Closes the combo popup and marks the box closed.
+    fn close_combo(&mut self) {
+        if let Some((id, _)) = self.combo.take() {
+            if let Some(node) = self.tree.node_mut(id) {
+                if let Some(clover_ui::node::Widget::ComboBox { open, .. }) = &mut node.widget {
+                    *open = false;
+                }
+            }
+        }
+        self.tree.set_overlay(None);
+    }
+
+    /// Handles a framework-internal action such as `@combo:blend:2`.
+    fn handle_internal(&mut self, action: &str) {
+        let rest = action.trim_start_matches('@');
+        let mut parts = rest.split(':');
+        let kind = parts.next().unwrap_or_default();
+        if kind != "combo" {
+            return;
+        }
+        let name = parts.next().unwrap_or_default();
+        let index: usize = parts.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+
+        let mut target = None;
+        if let Some(node) = self.tree.named(name) {
+            target = Some(node.id);
+        }
+        let Some(id) = target else { return };
+        let items = match self.tree.node(id).and_then(|node| node.widget.as_ref()) {
+            Some(clover_ui::node::Widget::ComboBox { items, .. }) => items.clone(),
+            _ => return,
+        };
+        if let Some(node) = self.tree.node_mut(id) {
+            if let Some(clover_ui::node::Widget::ComboBox { selected, open, .. }) = &mut node.widget {
+                *selected = index.min(items.len().saturating_sub(1));
+                *open = false;
+            }
+            let bounds = node.bounds;
+            self.tree.damage().add(bounds);
+        }
+        self.combo = None;
+        self.tree.set_overlay(None);
+        self.pending_actions.push(format!("change:{name}:{index}"));
+    }
+
+    /// Builds and shows the popup list for a combo box.
+    fn open_combo(&mut self, id: NodeId, name: &str) {
+        let Some(node) = self.tree.node(id) else { return };
+        let bounds = node.bounds;
+        let items = match node.widget.as_ref() {
+            Some(clover_ui::node::Widget::ComboBox { items, selected, .. }) => {
+                (items.clone(), *selected)
+            }
+            _ => return,
+        };
+        let (items, selected) = items;
+
+        let mut list = clover_ui::node::column()
+            .position(bounds.x, bounds.y + bounds.h + 2.0)
+            .width(clover_ui::style::Length::Px(bounds.w))
+            .padding(clover_core::Edges::all(2.0))
+            .background(clover_core::Color::rgb(0x2B, 0x31, 0x38))
+            .radius(4.0);
+        for (index, item) in items.iter().enumerate() {
+            let mut row = clover_ui::node::panel()
+                .width(clover_ui::style::Length::Fill)
+                .height(clover_ui::style::Length::Px(20.0))
+                .padding(clover_core::Edges::symmetric(8.0, 0.0))
+                .background(if index == selected {
+                    clover_core::Color::rgb(0x3B, 0x6F, 0xD4)
+                } else {
+                    clover_core::Color::TRANSPARENT
+                });
+            row.action = Some(format!("@combo:{name}:{index}"));
+            row.children.push(clover_ui::node::text(item.clone()));
+            list.children.push(row);
+        }
+
+        let mut wrapper = clover_ui::node::panel()
+            .width(clover_ui::style::Length::Fill)
+            .height(clover_ui::style::Length::Fill)
+            .hit_test(false);
+        wrapper.children.push(list);
+        self.tree.set_overlay(Some(wrapper));
+        self.combo = Some((id, name.to_string()));
+
+        if let Some(node) = self.tree.node_mut(id) {
+            if let Some(clover_ui::node::Widget::ComboBox { open, .. }) = &mut node.widget {
+                *open = true;
+            }
+        }
     }
 
     /// Whether a drag gesture is in progress.
@@ -702,6 +853,9 @@ impl Surface {
                     clover_ui::PointerAction::Down => {
                         // Focus the innermost focusable ancestor of the hit node.
                         let chain = self.tree.hit_chain(p.position);
+                        if self.combo.is_some() && !self.hit_is_inside_popup(&chain) {
+                            self.close_combo();
+                        }
                         // A drag handle claims the gesture first: dragging a panel
                         // must not also press whatever is drawn on top of it.
                         if let Some(id) = chain.iter().copied().find_map(|id| self.tree.find_widget(id)) {
@@ -754,7 +908,12 @@ impl Surface {
                         let release = self.action_target(&chain);
                         if let (Some(pressed), Some((released, action))) = (self.press_action, release) {
                             if pressed == released {
-                                self.pending_actions.push(action);
+                                if action.starts_with('@') {
+                                    // Framework-internal command, e.g. a combo item.
+                                    self.handle_internal(&action);
+                                } else {
+                                    self.pending_actions.push(action);
+                                }
                             }
                         }
                         self.press_action = None;
@@ -818,6 +977,9 @@ impl Surface {
                     }
                     if moved {
                         self.tree.damage().add(bounds);
+                        // Wheel scrolling moves content during layout, same as the
+                        // scrollbar; without this the offset changes but nothing moves.
+                        self.tree.invalidate_layout();
                     }
                 }
             }
@@ -1074,6 +1236,112 @@ mod tests {
         };
         assert!(checked, "the box should be checked");
         assert_eq!(surface.take_action().as_deref(), Some("change:lock:1"));
+    }
+
+    #[test]
+    fn combo_opens_a_popup_and_selects_an_item() {
+        let root = clover_ui::xaml::parse(
+            r#"<Panel><ComboBox x:Name="blend" Width="120" Height="20" Items="Normal,Multiply,Screen" SelectedIndex="0"/></Panel>"#,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        surface.dispatch(drag_event(PointerAction::Down, 10.0, 10.0));
+        surface.dispatch(drag_event(PointerAction::Up, 10.0, 10.0));
+        assert!(surface.tree().overlay().is_some(), "the popup lives in the overlay");
+        assert_eq!(surface.take_action(), None, "opening is not a change");
+        // The popup is laid out on the next frame, exactly like a real host.
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        // Row 1 sits below the box: box 20px + 2px gap + 2px padding + 20px row.
+        surface.dispatch(drag_event(PointerAction::Down, 10.0, 54.0));
+        surface.dispatch(drag_event(PointerAction::Up, 10.0, 54.0));
+
+        let selected = match surface.tree().named("blend").and_then(|node| node.widget.clone()) {
+            Some(clover_ui::node::Widget::ComboBox { selected, .. }) => selected,
+            other => panic!("expected a combo, got {other:?}"),
+        };
+        assert_eq!(selected, 1, "clicking row 1 selects index 1");
+        assert!(surface.tree().overlay().is_none(), "choosing closes the popup");
+        assert_eq!(surface.take_action().as_deref(), Some("change:blend:1"));
+    }
+
+    #[test]
+    fn clicking_outside_closes_the_combo_popup() {
+        let root = clover_ui::xaml::parse(
+            r#"<Panel><ComboBox x:Name="blend" Width="120" Height="20" Items="A,B"/></Panel>"#,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        surface.dispatch(drag_event(PointerAction::Down, 10.0, 10.0));
+        surface.dispatch(drag_event(PointerAction::Up, 10.0, 10.0));
+        assert!(surface.tree().overlay().is_some());
+        surface.dispatch(drag_event(PointerAction::Down, 180.0, 180.0));
+        assert!(surface.tree().overlay().is_none(), "a click elsewhere dismisses it");
+    }
+
+    #[test]
+    fn wheel_scroll_moves_content_after_layout() {
+        let root = clover_ui::xaml::parse(
+            r##"<ScrollViewer x:Name="list" Width="200" Height="100">
+                  <StackPanel Width="Fill">
+                    <Panel Height="120" Background="#202020"/>
+                    <Panel Height="120" Background="#262626"/>
+                  </StackPanel>
+                </ScrollViewer>"##,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 200.0, 100.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        let before = surface.tree().named("list").unwrap().children[0].children[0].bounds.y;
+        surface.dispatch(UiEvent::Wheel(clover_ui::WheelEvent {
+            position: Point::new(100.0, 50.0),
+            delta: -2.0,
+            modifiers: clover_ui::Modifiers::default(),
+        }));
+        surface.invalidate_all();
+        let _ = surface.frame();
+        let after = surface.tree().named("list").unwrap().children[0].children[0].bounds.y;
+        assert!(after < before, "content should move up, {before} -> {after}");
+    }
+
+    #[test]
+    fn scrollbar_drag_moves_the_container_it_targets() {
+        let root = clover_ui::xaml::parse(
+            r##"<StackPanel Width="Fill" Height="Fill">
+                  <ScrollViewer x:Name="list" Width="Fill" Height="200">
+                    <StackPanel Width="Fill">
+                      <Panel Height="120" Background="#202020"/>
+                      <Panel Height="120" Background="#262626"/>
+                      <Panel Height="120" Background="#2C2C2C"/>
+                    </StackPanel>
+                  </ScrollViewer>
+                  <ScrollBar x:Name="listbar" Orientation="Vertical" Target="list"
+                             Offset="0" Viewport="200" Extent="360" Width="10" Height="200"/>
+                </StackPanel>"##,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 200.0, 400.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        let bar = surface.tree().named("listbar").unwrap().bounds;
+        surface.dispatch(drag_event(PointerAction::Down, bar.x + 5.0, bar.y + bar.h * 0.8));
+        surface.dispatch(drag_event(PointerAction::Up, bar.x + 5.0, bar.y + bar.h * 0.8));
+
+        let offset = surface.tree().named("list").unwrap().scroll.offset;
+        assert!(offset > 50.0, "the container should have scrolled, got {offset}");
     }
 
     #[test]
