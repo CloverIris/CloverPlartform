@@ -186,6 +186,26 @@ clover_result clover_surface_wheel(clover_surface *surface, float x, float y, fl
 /* Returns bytes written excluding the NUL, 0 when empty, -1 on error. */
 int32_t clover_surface_take_action(clover_surface *surface, char *buffer, uint32_t capacity);
 
+/*
+ * MVVM update direction
+ * ---------------------
+ * The host pushes model changes into the tree instead of rebuilding it. Each call
+ * damages only the node it touches and returns CLOVER_OK when the value actually
+ * changed.
+ */
+clover_result clover_surface_set_value(clover_surface *surface, const char *name_utf8, float value);
+clover_result clover_surface_set_checked(clover_surface *surface, const char *name_utf8, bool checked);
+clover_result clover_surface_set_selected(clover_surface *surface, const char *name_utf8,
+                                          uint32_t index);
+clover_result clover_surface_set_enabled(clover_surface *surface, const char *name_utf8, bool enabled);
+
+/* Replaces a named node's children from a fragment, for dynamic lists. */
+clover_result clover_surface_set_children_xaml(clover_surface *surface, const char *name_utf8,
+                                               const char *xaml_utf8);
+
+/* Rebuilds the whole page from a .cui document, resources included. */
+clover_result clover_surface_reload_cui(clover_surface *surface, const char *path_utf8);
+
 /* Replaces a text node's content by x:Name. */
 clover_result clover_surface_set_label(clover_surface *surface, const char *name_utf8,
                                        const char *text_utf8);
@@ -220,6 +240,10 @@ clover_result clover_direct_begin_write(clover_surface *surface, uint64_t handle
                                         uint32_t *out_height);
 
 clover_result clover_direct_commit(clover_surface *surface, uint64_t handle);
+
+/* Binds a named <CloverSurface> node to a live direct region. */
+clover_result clover_surface_bind_direct(clover_surface *surface, const char *name_utf8,
+                                         uint64_t handle);
 
 /* Resizes a direct region; contents are cleared. Call when layout changes. */
 clover_result clover_direct_resize(clover_surface *surface, uint64_t handle, uint32_t width,

@@ -124,7 +124,9 @@ fn walk(
         return;
     }
 
-    let opacity = node.style.opacity.clamp(0.0, 1.0);
+    // Disabled nodes stay readable but visibly inert.
+    let effective = if node.style.enabled { node.style.opacity } else { node.style.opacity * 0.45 };
+    let opacity = effective.clamp(0.0, 1.0);
     let with_opacity = |c: Color| -> Premul {
         if opacity >= 1.0 {
             c.premultiply()
@@ -519,6 +521,20 @@ fn paint_widget(
             let chevron = with_opacity(node.style.text_color);
             push_tick(out, (cx - w, cy - w * 0.5), (cx, cy + w * 0.6), 1.4 * scale, chevron, clip);
             push_tick(out, (cx, cy + w * 0.6), (cx + w, cy - w * 0.5), 1.4 * scale, chevron, clip);
+        }
+        Widget::Splitter { horizontal, .. } => {
+            // A thin bar that thickens into a visible seam.
+            let seam = if *horizontal {
+                Rect::new(rect.x + (rect.w - scale).max(0.0) * 0.5, rect.y, scale.max(1.0), rect.h)
+            } else {
+                Rect::new(rect.x, rect.y + (rect.h - scale).max(0.0) * 0.5, rect.w, scale.max(1.0))
+            };
+            out.push(DrawCmd::RoundedRect {
+                rect: seam,
+                radius: 0.0,
+                color: track,
+                clip,
+            });
         }
         Widget::ScrollBar { horizontal, offset, viewport, extent, .. } => {
             let bar_radius = radius.min(rect.w.min(rect.h) * 0.5);

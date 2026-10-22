@@ -168,6 +168,8 @@ pub struct Surface {
     widget_press: Option<NodeId>,
     /// Open combo box: the node and its name, so the popup can be rebuilt.
     combo: Option<(NodeId, String)>,
+    /// Active splitter drag: (splitter node, size at press, pointer at press).
+    splitter: Option<(NodeId, f32, f32)>,
 }
 
 impl Surface {
@@ -186,6 +188,7 @@ impl Surface {
             widget_drag: None,
             widget_press: None,
             combo: None,
+            splitter: None,
         };
         surface.resize(width, height, scale);
         Some(surface)
@@ -593,6 +596,137 @@ impl Surface {
         true
     }
 
+    /// Points a named `<CloverSurface>` node at a live direct region.
+    ///
+    /// Documents cannot know the handle a region will get, so the host binds it
+    /// after creating the region instead of hard-coding `Id` in markup.
+    pub fn bind_direct_surface(&mut self, name: &str, handle: SurfaceHandle) -> bool {
+        let Some(node) = self.tree.named_mut(name) else { return false };
+        if let View::Surface { handle: current } = &mut node.view {
+            *current = handle;
+            let bounds = node.bounds;
+            self.tree.damage().add(bounds);
+            self.tree.invalidate_layout();
+            return true;
+        }
+        false
+    }
+
+    /// Pushes a value into a slider or scrollbar (the MVVM update direction).
+    pub fn set_value(&mut self, name: &str, value: f32) -> bool {
+        let Some(id) = self.tree.named(name).map(|node| node.id) else { return false };
+        let Some(node) = self.tree.node_mut(id) else { return false };
+        let changed = match &mut node.widget {
+            Some(clover_ui::node::Widget::Slider { value: current, min, max, .. }) => {
+                let next = value.clamp(*min, *max);
+                let changed = (*current - next).abs() > 0.001;
+                *current = next;
+                changed
+            }
+            Some(clover_ui::node::Widget::ScrollBar { offset, extent, viewport, .. }) => {
+                let next = value.clamp(0.0, (*extent - *viewport).max(0.0));
+                let changed = (*offset - next).abs() > 0.001;
+                *offset = next;
+                changed
+            }
+            _ => false,
+        };
+        if changed {
+            let bounds = node.bounds;
+            self.tree.damage().add(bounds);
+            self.tree.invalidate_layout();
+        }
+        changed
+    }
+
+    /// Pushes a checked state into a checkbox.
+    pub fn set_checked(&mut self, name: &str, checked: bool) -> bool {
+        let Some(id) = self.tree.named(name).map(|node| node.id) else { return false };
+        let Some(node) = self.tree.node_mut(id) else { return false };
+        if let Some(clover_ui::node::Widget::CheckBox { checked: current }) = &mut node.widget {
+            if *current == checked {
+                return false;
+            }
+            *current = checked;
+            let bounds = node.bounds;
+            self.tree.damage().add(bounds);
+            return true;
+        }
+        false
+    }
+
+    /// Pushes a selection into a combo box.
+    pub fn set_selected(&mut self, name: &str, index: usize) -> bool {
+        let Some(id) = self.tree.named(name).map(|node| node.id) else { return false };
+        let Some(node) = self.tree.node_mut(id) else { return false };
+        if let Some(clover_ui::node::Widget::ComboBox { selected, items, .. }) = &mut node.widget {
+            let next = index.min(items.len().saturating_sub(1));
+            if *selected == next {
+                return false;
+            }
+            *selected = next;
+            let bounds = node.bounds;
+            self.tree.damage().add(bounds);
+            return true;
+        }
+        false
+    }
+
+    /// Enables or disables a node, dimming it when disabled.
+    pub fn set_enabled(&mut self, name: &str, enabled: bool) -> bool {
+        let Some(node) = self.tree.named_mut(name) else { return false };
+        if node.style.enabled == enabled {
+            return false;
+        }
+        node.style.enabled = enabled;
+        let bounds = node.bounds;
+        self.tree.damage().add(bounds);
+        true
+    }
+
+    /// Replaces a named node's children, for dynamic lists.
+    pub fn set_children(&mut self, name: &str, children: Vec<Node>) -> bool {
+        let Some(node) = self.tree.named_mut(name) else { return false };
+        node.children = children;
+        self.tree.invalidate_layout();
+        self.tree.damage().mark_full();
+        true
+    }
+
+    /// Rebuilds the whole page from a `.cui` document, resources included.
+    pub fn reload_cui(&mut self, path: &str) -> bool {
+        let Ok(document) = clover_ui::xaml::UiDocument::from_path(path) else {
+            return false;
+        };
+        let base = std::path::Path::new(path)
+            .parent()
+            .map(|dir| dir.to_path_buf())
+            .unwrap_or_default();
+        for (key, relative) in document.resources() {
+            let _ = self
+                .renderer
+                .images
+                .load_png_named(key.clone(), base.join(relative));
+        }
+        let root = {
+            let images = &self.renderer.images;
+            match document.build(&move |source: &str| images.handle_for(source)) {
+                Ok(root) => root,
+                Err(_) => return false,
+            }
+        };
+        let overlay = {
+            let images = &self.renderer.images;
+            match document.build_overlay(&move |source: &str| images.handle_for(source)) {
+                Ok(overlay) => overlay,
+                Err(_) => return false,
+            }
+        };
+        self.tree.set_overlay(overlay);
+        self.tree.set_root(root);
+        true
+    }
+
     /// Updates a text node's content, e.g. a status readout.
     pub fn set_label(&mut self, name: &str, value: &str) -> bool {
         self.tree.set_label(name, value)
@@ -613,6 +747,15 @@ impl Surface {
             clover_ui::node::Widget::Slider { .. } | clover_ui::node::Widget::ScrollBar { .. } => {
                 self.widget_drag = Some(id);
                 self.drag_widget_to(id, position);
+                true
+            }
+            clover_ui::node::Widget::Splitter { horizontal, .. } => {
+                let (start, position_along) = if horizontal {
+                    (self.pane_size(id), position.x)
+                } else {
+                    (self.pane_size(id), position.y)
+                };
+                self.splitter = Some((id, start, position_along));
                 true
             }
             clover_ui::node::Widget::CheckBox { .. } => {
@@ -823,6 +966,45 @@ impl Surface {
         }
     }
 
+    /// Size of the pane a splitter drives, in its drag axis.
+    fn pane_size(&self, splitter: NodeId) -> f32 {
+        let Some(node) = self.tree.node(splitter) else { return 0.0 };
+        let Some(clover_ui::node::Widget::Splitter { horizontal, target, .. }) = node.widget.as_ref()
+        else {
+            return 0.0;
+        };
+        let Some(name) = target.as_deref() else { return 0.0 };
+        let Some(pane) = self.tree.named(name) else { return 0.0 };
+        if *horizontal {
+            pane.bounds.w
+        } else {
+            pane.bounds.h
+        }
+    }
+
+    /// Resizes the pane a splitter drives.
+    fn drag_splitter(&mut self, splitter: NodeId, start: f32, origin: f32, position: clover_core::Point) {
+        let Some(node) = self.tree.node(splitter) else { return };
+        let Some(clover_ui::node::Widget::Splitter { horizontal, target, min, max }) =
+            node.widget.as_ref()
+        else {
+            return;
+        };
+        let (horizontal, min, max) = (*horizontal, *min, *max);
+        let Some(name) = target.clone() else { return };
+        let delta = if horizontal { position.x - origin } else { position.y - origin };
+        let size = (start + delta).clamp(min, max);
+        if let Some(pane) = self.tree.named_mut(&name) {
+            if horizontal {
+                pane.style.width = clover_ui::style::Length::Px(size);
+            } else {
+                pane.style.height = clover_ui::style::Length::Px(size);
+            }
+        }
+        self.tree.invalidate_layout();
+        self.tree.damage().mark_full();
+    }
+
     /// Whether a drag gesture is in progress.
     ///
     /// Hosts use this to swap the cursor and to stop hit-testing underneath.
@@ -885,6 +1067,9 @@ impl Surface {
                         self.press_action = self.action_target(&chain).map(|(id, _)| id);
                     }
                     clover_ui::PointerAction::Up => {
+                        if self.splitter.take().is_some() {
+                            return Vec::new();
+                        }
                         if let Some(id) = self.widget_drag.take() {
                             self.emit_widget_change(id);
                             return Vec::new();
@@ -920,6 +1105,9 @@ impl Surface {
                         self.tree.set_pressed(None);
                     }
                     clover_ui::PointerAction::Cancel => {
+                        if self.splitter.take().is_some() {
+                            return Vec::new();
+                        }
                         if let Some(id) = self.widget_drag.take() {
                             self.emit_widget_change(id);
                             return Vec::new();
@@ -938,6 +1126,9 @@ impl Surface {
                         self.tree.set_pressed(None);
                     }
                     clover_ui::PointerAction::Move => {
+                        if let Some((id, start, origin)) = self.splitter {
+                            self.drag_splitter(id, start, origin, p.position);
+                        }
                         if let Some(id) = self.widget_drag {
                             self.drag_widget_to(id, p.position);
                         }
@@ -984,6 +1175,13 @@ impl Surface {
                 }
             }
             UiEvent::Key(k) => {
+                if k.action == clover_ui::KeyAction::Down && k.key == 0x1B {
+                    // Escape dismisses a popup before anything else sees the key.
+                    if self.combo.is_some() || self.tree.overlay().is_some() {
+                        self.close_combo();
+                        return Vec::new();
+                    }
+                }
                 if k.action == clover_ui::KeyAction::Down {
                     // Tab / Shift+Tab move keyboard focus before routing.
                     if k.key == 0x09 && !k.repeat {
@@ -1236,6 +1434,144 @@ mod tests {
         };
         assert!(checked, "the box should be checked");
         assert_eq!(surface.take_action().as_deref(), Some("change:lock:1"));
+    }
+
+    #[test]
+    fn a_bound_direct_surface_is_composited_into_the_page() {
+        let root = clover_ui::xaml::parse(
+            r##"<StackPanel Background="#202020" Width="Fill" Height="Fill">
+                  <Panel Height="40" Background="#303030"/>
+                  <CloverSurface x:Name="canvas" Width="Fill" Height="Fill"/>
+                </StackPanel>"##,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 200.0, 200.0, 1.0).expect("system font required");
+        let region = DirectSurface::new(200, 160);
+        region.write(|pixels, stride, rows| {
+            for y in 0..rows as usize {
+                for x in 0..stride as usize {
+                    pixels[y * stride as usize + x] = 0xFF30_D050;
+                }
+            }
+        });
+        let handle = SurfaceHandle(7);
+        surface.register_direct(handle, Arc::clone(&region));
+        assert!(surface.bind_direct_surface("canvas", handle), "the node must bind");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        let pixel = surface.renderer().canvas().pixel(100, 120);
+        assert_eq!(pixel.r(), 0x30, "the canvas pixels reach the frame");
+        assert_eq!(pixel.g(), 0xD0);
+    }
+
+    #[test]
+    fn set_value_pushes_into_the_widget() {
+        let root = clover_ui::xaml::parse(
+            r#"<Panel><Slider x:Name="size" Value="0" Min="0" Max="100" Width="200"/></Panel>"#,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 200.0, 60.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        assert!(surface.set_value("size", 42.0));
+        assert!(!surface.set_value("size", 42.0), "an unchanged value is not a change");
+        let value = match surface.tree().named("size").and_then(|node| node.widget.clone()) {
+            Some(clover_ui::node::Widget::Slider { value, .. }) => value,
+            other => panic!("expected a slider, got {other:?}"),
+        };
+        assert_eq!(value, 42.0);
+        assert!(surface.set_value("size", 500.0), "values clamp to the range");
+    }
+
+    #[test]
+    fn set_checked_and_selected_push_into_widgets() {
+        let root = clover_ui::xaml::parse(
+            r#"<Panel><CheckBox x:Name="lock"/><ComboBox x:Name="blend" Items="A,B,C"/></Panel>"#,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 200.0, 60.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        assert!(surface.set_checked("lock", true));
+        assert!(surface.set_selected("blend", 2));
+        assert!(matches!(
+            surface.tree().named("lock").and_then(|node| node.widget.clone()),
+            Some(clover_ui::node::Widget::CheckBox { checked: true })
+        ));
+        assert!(matches!(
+            surface.tree().named("blend").and_then(|node| node.widget.clone()),
+            Some(clover_ui::node::Widget::ComboBox { selected: 2, .. })
+        ));
+    }
+
+    #[test]
+    fn disabled_nodes_ignore_input() {
+        let root = clover_ui::xaml::parse(
+            r##"<Panel><Panel x:Name="btn" Width="80" Height="40" Background="#333333" Command="click:btn"/></Panel>"##,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 200.0, 100.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        assert!(surface.set_enabled("btn", false));
+        surface.dispatch(drag_event(PointerAction::Down, 10.0, 10.0));
+        surface.dispatch(drag_event(PointerAction::Up, 10.0, 10.0));
+        assert_eq!(surface.take_action(), None, "a disabled node must not fire");
+    }
+
+    #[test]
+    fn splitter_resizes_its_target() {
+        let root = clover_ui::xaml::parse(
+            r##"<StackPanel Orientation="Horizontal" Width="Fill" Height="Fill">
+                 <Panel x:Name="left" Width="200" Height="Fill" Background="#202020"/>
+                 <Splitter x:Name="split" Orientation="Vertical" Target="left" Min="120" Max="400" Width="4" Height="Fill"/>
+                 <Panel Width="Fill" Height="Fill" Background="#303030"/>
+               </StackPanel>"##,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 600.0, 300.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        assert_eq!(surface.tree().named("left").unwrap().bounds.w, 200.0);
+
+        surface.dispatch(drag_event(PointerAction::Down, 202.0, 100.0));
+        surface.dispatch(drag_event(PointerAction::Move, 262.0, 100.0));
+        surface.dispatch(drag_event(PointerAction::Up, 262.0, 100.0));
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        let width = surface.tree().named("left").unwrap().bounds.w;
+        assert!((width - 260.0).abs() < 1.0, "the pane should widen by the drag, got {width}");
+    }
+
+    #[test]
+    fn escape_dismisses_the_popup() {
+        let root = clover_ui::xaml::parse(
+            r#"<Panel><ComboBox x:Name="blend" Width="120" Height="20" Items="A,B"/></Panel>"#,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        surface.dispatch(drag_event(PointerAction::Down, 10.0, 10.0));
+        surface.dispatch(drag_event(PointerAction::Up, 10.0, 10.0));
+        assert!(surface.tree().overlay().is_some());
+        surface.dispatch(UiEvent::Key(clover_ui::KeyEvent {
+            key: 0x1B,
+            action: clover_ui::KeyAction::Down,
+            modifiers: clover_ui::Modifiers::default(),
+            repeat: false,
+        }));
+        assert!(surface.tree().overlay().is_none(), "Esc closes the popup");
     }
 
     #[test]

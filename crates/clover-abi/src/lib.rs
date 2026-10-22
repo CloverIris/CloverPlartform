@@ -916,6 +916,171 @@ pub unsafe extern "C" fn clover_surface_set_label(
     }
 }
 
+/// Pushes a value into a slider or scrollbar (the MVVM update direction).
+///
+/// # Safety
+/// `name_utf8` must be NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_set_value(
+    surface: *mut CloverSurface,
+    name_utf8: *const c_char,
+    value: f32,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if name_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let Ok(name) = CStr::from_ptr(name_utf8).to_str() else { return CloverResult::ParseError };
+    if surface.surface.set_value(name, value) {
+        CloverResult::Ok
+    } else {
+        CloverResult::UnknownHandle
+    }
+}
+
+/// Pushes a checked state into a checkbox.
+///
+/// # Safety
+/// `name_utf8` must be NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_set_checked(
+    surface: *mut CloverSurface,
+    name_utf8: *const c_char,
+    checked: bool,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if name_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let Ok(name) = CStr::from_ptr(name_utf8).to_str() else { return CloverResult::ParseError };
+    if surface.surface.set_checked(name, checked) {
+        CloverResult::Ok
+    } else {
+        CloverResult::UnknownHandle
+    }
+}
+
+/// Pushes a selection into a combo box.
+///
+/// # Safety
+/// `name_utf8` must be NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_set_selected(
+    surface: *mut CloverSurface,
+    name_utf8: *const c_char,
+    index: u32,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if name_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let Ok(name) = CStr::from_ptr(name_utf8).to_str() else { return CloverResult::ParseError };
+    if surface.surface.set_selected(name, index as usize) {
+        CloverResult::Ok
+    } else {
+        CloverResult::UnknownHandle
+    }
+}
+
+/// Enables or disables a node, dimming it when disabled.
+///
+/// # Safety
+/// `name_utf8` must be NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_set_enabled(
+    surface: *mut CloverSurface,
+    name_utf8: *const c_char,
+    enabled: bool,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if name_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let Ok(name) = CStr::from_ptr(name_utf8).to_str() else { return CloverResult::ParseError };
+    if surface.surface.set_enabled(name, enabled) {
+        CloverResult::Ok
+    } else {
+        CloverResult::UnknownHandle
+    }
+}
+
+/// Replaces a named node's children from a markup fragment, for dynamic lists.
+///
+/// The fragment is wrapped in a container, so the host passes a list of elements
+/// rather than a single root.
+///
+/// # Safety
+/// Both strings must be NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_set_children_xaml(
+    surface: *mut CloverSurface,
+    name_utf8: *const c_char,
+    xaml_utf8: *const c_char,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if name_utf8.is_null() || xaml_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let (Ok(name), Ok(markup)) = (
+        CStr::from_ptr(name_utf8).to_str(),
+        CStr::from_ptr(xaml_utf8).to_str(),
+    ) else {
+        return CloverResult::ParseError;
+    };
+    let wrapper = format!("<Panel>{markup}</Panel>");
+    let Ok(root) = xaml::parse(&wrapper, &xaml::NoImages) else {
+        return CloverResult::ParseError;
+    };
+    if surface.surface.set_children(name, root.children) {
+        CloverResult::Ok
+    } else {
+        CloverResult::UnknownHandle
+    }
+}
+
+/// Rebuilds the whole page from a `.cui` document, resources included.
+///
+/// # Safety
+/// `path_utf8` must be NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_reload_cui(
+    surface: *mut CloverSurface,
+    path_utf8: *const c_char,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if path_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let Ok(path) = CStr::from_ptr(path_utf8).to_str() else { return CloverResult::ParseError };
+    if surface.surface.reload_cui(path) {
+        CloverResult::Ok
+    } else {
+        CloverResult::ParseError
+    }
+}
+
+/// Points a named `<CloverSurface>` node at a live direct region.
+///
+/// # Safety
+/// `name_utf8` must be NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_bind_direct(
+    surface: *mut CloverSurface,
+    name_utf8: *const c_char,
+    handle: u64,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if name_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let Ok(name) = CStr::from_ptr(name_utf8).to_str() else { return CloverResult::ParseError };
+    if surface.surface.bind_direct_surface(name, clover_ui::SurfaceHandle(handle)) {
+        CloverResult::Ok
+    } else {
+        CloverResult::UnknownHandle
+    }
+}
+
 /// Registers an image from a PNG file and returns its handle, or 0 on failure.
 ///
 /// # Safety

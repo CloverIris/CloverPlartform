@@ -82,6 +82,13 @@ pub fn measure(node: &Node, available: Size, metrics: &dyn LayoutMetrics) -> Siz
             }
             crate::node::Widget::CheckBox { .. } => Size::new(14.0, 14.0),
             crate::node::Widget::ComboBox { .. } => Size::new(120.0, 20.0),
+            crate::node::Widget::Splitter { horizontal, .. } => {
+                if *horizontal {
+                    Size::new(4.0, 100.0)
+                } else {
+                    Size::new(100.0, 4.0)
+                }
+            }
             crate::node::Widget::ScrollBar { horizontal, .. } => {
                 if *horizontal {
                     Size::new(100.0, 10.0)

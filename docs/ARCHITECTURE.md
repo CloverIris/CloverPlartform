@@ -162,6 +162,27 @@ Today `hdr_raster` is false, so an HDR request lands on `Bgra8Sdr` with
 silent one — the whole point of recording the reason is that a host can surface
 it and a future float raster path only has to flip one flag.
 
+## 5a0. The MVVM seam
+
+A host that rebuilds the tree whenever a number changes cannot hold a caret, a
+scroll position or a hover state. So the update direction is explicit:
+
+| direction | call | effect |
+|---|---|---|
+| model → view | `set_value` / `set_checked` / `set_selected` | changes one widget, damages one rect |
+| model → view | `set_label` | changes one text node |
+| model → view | `set_children_xaml` | swaps one container's rows (lists) |
+| model → view | `reload_cui` | rebuilds the page from the document |
+| view → model | `take_action` → `change:<name>:<value>` | host dispatches a command |
+
+Every setter returns whether anything actually changed, so a host can push a whole
+snapshot each frame and only the differences cost anything.
+
+A canvas is a node, not a window: `<CloverSurface x:Name="canvas"/>` plus
+`clover_surface_bind_direct` attaches a direct-memory region, and the compositor
+samples it into the page. The node's layout decides where the canvas is, which is
+what makes the editor chrome and the canvas one document.
+
 ## 5a1. Controls
 
 A layout engine with no controls forces every host to re-invent sliders, and the

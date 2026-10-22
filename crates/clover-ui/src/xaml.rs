@@ -724,6 +724,17 @@ fn build(
             let selected = xml.attr("SelectedIndex").and_then(|v| v.trim().parse().ok()).unwrap_or(0);
             node::combo(name, items, selected)
         }
+        "splitter" => {
+            let name = xml.attr("x:Name").or_else(|| xml.attr("Name")).unwrap_or("");
+            let horizontal = xml
+                .attr("Orientation")
+                .map(|v| v.trim().eq_ignore_ascii_case("vertical"))
+                .unwrap_or(true);
+            let target = xml.attr("Target").unwrap_or_default();
+            let min = xml.attr_f32("Min").unwrap_or(60.0);
+            let max = xml.attr_f32("Max").unwrap_or(800.0);
+            node::splitter(name, horizontal, target, min, max)
+        }
         "scrollbar" => {
             let name = xml.attr("x:Name").or_else(|| xml.attr("Name")).unwrap_or("");
             let horizontal = xml
@@ -1301,6 +1312,23 @@ mod tests {
     fn templates_require_a_key_and_a_body() {
         assert!(parse_stylesheet(r#"<Styles><Template><Panel/></Template></Styles>"#).is_err());
         assert!(parse_stylesheet(r#"<Styles><Template x:Key="x"></Template></Styles>"#).is_err());
+    }
+
+    #[test]
+    fn parses_splitter() {
+        let page = parse(
+            r#"<Panel><Splitter x:Name="split" Orientation="Vertical" Target="left" Min="80" Max="400"/></Panel>"#,
+            &NoImages,
+        )
+        .unwrap();
+        match &page.children[0].widget {
+            Some(node::Widget::Splitter { horizontal, target, min, max }) => {
+                assert!(*horizontal);
+                assert_eq!(target.as_deref(), Some("left"));
+                assert_eq!((*min, *max), (80.0, 400.0));
+            }
+            other => panic!("expected a splitter, got {other:?}"),
+        }
     }
 
     #[test]

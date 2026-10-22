@@ -93,6 +93,16 @@ pub enum Widget {
     CheckBox { checked: bool },
     /// Drop-down list; the popup lives in the overlay.
     ComboBox { items: Vec<String>, selected: usize, open: bool },
+    /// Drag handle between two panes; resizing the named target.
+    ///
+    /// `horizontal` is true for a vertical bar that resizes width.
+    Splitter {
+        horizontal: bool,
+        /// Node whose size the splitter drives.
+        target: Option<String>,
+        min: f32,
+        max: f32,
+    },
     /// Scrollbar thumb over a track. `target` names the container it scrolls.
     ScrollBar {
         horizontal: bool,
@@ -111,6 +121,7 @@ impl Widget {
             Widget::CheckBox { checked } => if *checked { "1".into() } else { "0".into() },
             Widget::ComboBox { selected, .. } => selected.to_string(),
             Widget::ScrollBar { offset, .. } => format!("{offset:.0}"),
+            Widget::Splitter { .. } => String::from("0"),
         }
     }
 }
@@ -389,6 +400,12 @@ impl Node {
             *stroke = Some(color);
             *stroke_width = width;
         }
+        self
+    }
+
+    /// Disables the node and everything under it.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.style.enabled = enabled;
         self
     }
 
@@ -706,6 +723,9 @@ impl Node {
             return false;
         }
         // Later children paint on top, so test them first.
+        if !self.style.enabled {
+            return false;
+        }
         for child in self.children.iter().rev() {
             if child.hit_chain_into(point, out) {
                 out.push(self.id);
@@ -792,6 +812,24 @@ pub fn combo(name: &str, items: Vec<String>, selected: usize) -> Node {
     node.name = Some(name.to_string());
     node.widget = Some(Widget::ComboBox { items, selected, open: false });
     node.style.cursor = crate::style::Cursor::Pointer;
+    node
+}
+
+/// A drag handle that resizes the named pane.
+pub fn splitter(name: &str, horizontal: bool, target: &str, min: f32, max: f32) -> Node {
+    let mut node = Node::new();
+    node.name = Some(name.to_string());
+    node.widget = Some(Widget::Splitter {
+        horizontal,
+        target: Some(target.to_string()),
+        min,
+        max,
+    });
+    node.style.cursor = if horizontal {
+        crate::style::Cursor::ResizeHorizontal
+    } else {
+        crate::style::Cursor::ResizeVertical
+    };
     node
 }
 

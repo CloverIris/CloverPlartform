@@ -176,6 +176,8 @@ pub struct Style {
     /// When false the node paints but takes no hits, so clicks pass through to
     /// whatever is underneath. Overlay wrappers rely on this.
     pub hit_test_visible: bool,
+    /// When false the node is drawn dimmed and ignores input, subtree included.
+    pub enabled: bool,
     /// Truncates the text with an ellipsis instead of overflowing.
     pub ellipsis: bool,
     /// Highlight colour for widget fills, thumbs and checks.
@@ -230,6 +232,7 @@ impl Default for Style {
             grid_columns: None,
             cursor: Cursor::Default,
             hit_test_visible: true,
+            enabled: true,
             ellipsis: false,
             accent: Color::rgb(0x3B, 0x6F, 0xD4),
             position: None,
