@@ -827,6 +827,68 @@ pub unsafe extern "C" fn clover_surface_cursor(
     }
 }
 
+/// Creates a surface from a `.cui` document, resources included.
+///
+/// Image resources are resolved relative to the document, so a shell can ship
+/// next to its assets.
+///
+/// # Safety
+/// `path_utf8` must be a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_create_from_cui(
+    width: f32,
+    height: f32,
+    scale: f32,
+    path_utf8: *const c_char,
+) -> *mut CloverSurface {
+    if path_utf8.is_null() {
+        return std::ptr::null_mut();
+    }
+    let Ok(path) = CStr::from_ptr(path_utf8).to_str() else {
+        return std::ptr::null_mut();
+    };
+    let Ok(document) = xaml::UiDocument::from_path(path) else {
+        return std::ptr::null_mut();
+    };
+    let base = std::path::Path::new(path)
+        .parent()
+        .map(|dir| dir.to_path_buf())
+        .unwrap_or_default();
+    let Some(mut surface) = Surface::new(node::panel(), width, height, scale) else {
+        return std::ptr::null_mut();
+    };
+    for (key, relative) in document.resources() {
+        let full = base.join(relative);
+        if surface
+            .renderer_mut()
+            .images
+            .load_png_named(key.clone(), &full)
+            .is_err()
+        {
+            return std::ptr::null_mut();
+        }
+    }
+    let root = {
+        let images = &surface.renderer().images;
+        match document.build(&move |source: &str| images.handle_for(source)) {
+            Ok(root) => root,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+    let overlay = {
+        let images = &surface.renderer().images;
+        match document.build_overlay(&move |source: &str| images.handle_for(source)) {
+            Ok(overlay) => overlay,
+            Err(_) => return std::ptr::null_mut(),
+        }
+    };
+    if let Some(overlay) = overlay {
+        surface.set_overlay(Some(overlay));
+    }
+    surface.set_root(root);
+    Box::into_raw(Box::new(CloverSurface { surface, direct: Vec::new(), pending: Vec::new() }))
+}
+
 /// Registers an image from a PNG file and returns its handle, or 0 on failure.
 ///
 /// # Safety
