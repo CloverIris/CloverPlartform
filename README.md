@@ -30,6 +30,10 @@ repository so it can be reused elsewhere.
   rectangles and borders.
 * **Keyboard focus.** Tab / Shift+Tab traversal over focusable nodes, and key
   events routed through capture → target → bubble along the focused node.
+* **Interaction feedback.** Hovered surfaces lighten and pressed ones darken by
+  default, with no per-widget code.
+* **Hosts.** A C ABI, exercised by CloverPic's macOS adapter; see
+  [docs/MIGRATION.md](docs/MIGRATION.md).
 * **Direct-memory child surfaces.** A region of the UI can be handed to another
   thread as a raw pixel buffer with swap-chain semantics — this is how a paint
   canvas keeps its own high-refresh-rate loop.

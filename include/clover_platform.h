@@ -75,6 +75,14 @@ typedef struct clover_frame {
     uint64_t generation; /* increments on every rendered frame */
 } clover_frame;
 
+/* A rectangle in surface logical pixels. */
+typedef struct clover_rect {
+    float x;
+    float y;
+    float w;
+    float h;
+} clover_rect;
+
 typedef struct clover_stats {
     uint32_t nodes;
     uint32_t tiles_last_frame;
@@ -156,6 +164,14 @@ clover_result clover_direct_begin_write(clover_surface *surface, uint64_t handle
                                         uint32_t *out_height);
 
 clover_result clover_direct_commit(clover_surface *surface, uint64_t handle);
+
+/* Resizes a direct region; contents are cleared. Call when layout changes. */
+clover_result clover_direct_resize(clover_surface *surface, uint64_t handle, uint32_t width,
+                                   uint32_t height);
+
+/* Looks up a node by x:Name and reports its laid-out bounds in logical pixels. */
+clover_result clover_surface_node_bounds(clover_surface *surface, const char *name_utf8,
+                                         clover_rect *out);
 
 /* Registers a PNG image and returns its handle, or 0 on failure. */
 uint64_t clover_surface_add_image_png(clover_surface *surface, const char *path_utf8);

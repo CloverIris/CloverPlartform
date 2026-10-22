@@ -108,10 +108,20 @@ fn walk(
     };
 
     if node.style.background.a > 0 {
+        // Default interaction feedback: hovered surfaces lift, pressed ones sink.
+        // Skins that want their own visuals can set the background to transparent
+        // and draw their own state on top.
+        let background = if node.state.pressed {
+            node.style.background.lerp(Color::BLACK, 0.18)
+        } else if node.state.hovered {
+            node.style.background.lerp(Color::WHITE, 0.08)
+        } else {
+            node.style.background
+        };
         out.push(DrawCmd::RoundedRect {
             rect,
             radius: node.style.radius * scale,
-            color: with_opacity(node.style.background),
+            color: with_opacity(background),
             clip,
         });
     }

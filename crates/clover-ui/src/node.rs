@@ -443,6 +443,7 @@ pub struct UiTree {
     invalidated: Vec<NodeId>,
     damage: clover_core::Damage,
     focus: Option<NodeId>,
+    pressed: Option<NodeId>,
 }
 
 impl UiTree {
@@ -455,6 +456,7 @@ impl UiTree {
             invalidated: Vec::new(),
             damage: clover_core::Damage::new(),
             focus: None,
+            pressed: None,
         }
     }
 
@@ -476,6 +478,16 @@ impl UiTree {
 
     pub fn damage(&mut self) -> &mut clover_core::Damage {
         &mut self.damage
+    }
+
+    /// Takes the pending damage, clipped to `bounds` and snapped to whole pixels.
+    pub fn take_damage(&mut self, bounds: Rect) -> Vec<Rect> {
+        self.damage.take(bounds)
+    }
+
+    /// Whether anything is waiting to be repainted.
+    pub fn has_damage(&self) -> bool {
+        !self.damage.is_empty()
     }
 
     /// Resizes the surface; everything becomes dirty.
@@ -601,6 +613,47 @@ impl UiTree {
             }
         }
         true
+    }
+
+    /// The node currently held down by a pointer, if any.
+    pub fn pressed(&self) -> Option<NodeId> {
+        self.pressed
+    }
+
+    /// Sets or clears the pressed node, damaging the affected bounds.
+    pub fn set_pressed(&mut self, id: Option<NodeId>) -> bool {
+        if self.pressed == id {
+            return false;
+        }
+        let mut changed = false;
+        if let Some(previous) = self.pressed {
+            let mut bounds = Rect::ZERO;
+            if let Some(node) = self.root.find_mut(previous) {
+                node.state.pressed = false;
+                bounds = node.bounds;
+            }
+            if !bounds.is_empty() {
+                self.damage.add(bounds);
+            }
+            changed = true;
+        }
+        self.pressed = None;
+        if let Some(next) = id {
+            let mut bounds = Rect::ZERO;
+            let mut found = false;
+            if let Some(node) = self.root.find_mut(next) {
+                node.state.pressed = true;
+                bounds = node.bounds;
+                found = true;
+            }
+            if !bounds.is_empty() {
+                self.damage.add(bounds);
+            }
+            if found {
+                self.pressed = Some(next);
+            }
+        }
+        changed
     }
 
     /// Moves focus to the next (or previous) focusable node, wrapping around.

@@ -293,6 +293,27 @@ pub unsafe extern "C" fn clover_direct_begin_write(
     CloverResult::Ok
 }
 
+/// Resizes a direct-memory region. Call after the layout gives the canvas a new
+/// box; the contents are cleared.
+///
+/// # Safety
+/// `surface` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn clover_direct_resize(
+    surface: *mut CloverSurface,
+    handle: u64,
+    width: u32,
+    height: u32,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    let Some(entry) = surface.direct.iter().find(|(h, _)| h.0 == handle) else {
+        return CloverResult::UnknownHandle;
+    };
+    entry.1.resize(width, height);
+    surface.surface.invalidate_all();
+    CloverResult::Ok
+}
+
 /// Publishes the buffer locked by `clover_direct_begin_write`.
 ///
 /// # Safety
@@ -326,6 +347,45 @@ pub unsafe extern "C" fn clover_surface_add_image_png(surface: *mut CloverSurfac
     match surface.surface.renderer_mut().images.load_png(path) {
         Ok(handle) => handle.0,
         Err(_) => 0,
+    }
+}
+
+/// A rectangle in surface logical pixels.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CloverRect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+/// Looks up a node by `x:Name` and reports its laid-out bounds in logical pixels.
+///
+/// Hosts use this to size a direct-memory region to the box the layout actually
+/// gave it, instead of guessing.
+///
+/// # Safety
+/// `name_utf8` must be a valid NUL-terminated string and `out` a valid pointer.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_node_bounds(
+    surface: *mut CloverSurface,
+    name_utf8: *const c_char,
+    out: *mut CloverRect,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if name_utf8.is_null() || out.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let Ok(name) = CStr::from_ptr(name_utf8).to_str() else {
+        return CloverResult::ParseError;
+    };
+    match surface.surface.tree().named(name) {
+        Some(node) => {
+            *out = CloverRect { x: node.bounds.x, y: node.bounds.y, w: node.bounds.w, h: node.bounds.h };
+            CloverResult::Ok
+        }
+        None => CloverResult::UnknownHandle,
     }
 }
 

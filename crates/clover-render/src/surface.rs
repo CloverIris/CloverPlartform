@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use clover_core::{Damage, Point, Premul, Rect, Size};
-use clover_ui::{node::Node, NodeId, RouteEntry, SurfaceHandle, UiEvent, UiTree};
+use clover_core::{Premul, Rect, Size};
+use clover_ui::{node::Node, RouteEntry, SurfaceHandle, UiEvent, UiTree};
 
 use crate::canvas::Canvas;
 use crate::display_list::build;
@@ -154,7 +154,6 @@ impl DirectSurface {
 pub struct Surface {
     tree: UiTree,
     renderer: CpuRenderer,
-    damage: Damage,
     direct: HashMap<SurfaceHandle, Arc<DirectSurface>>,
     generation: u64,
 }
@@ -167,7 +166,6 @@ impl Surface {
         let mut surface = Self {
             tree: UiTree::new(root),
             renderer,
-            damage: Damage::new(),
             direct: HashMap::new(),
             generation: 0,
         };
@@ -196,13 +194,13 @@ impl Surface {
         self.tree.resize(size, scale);
         let (w, h) = physical_size(width, height, scale);
         self.renderer.resize(w, h);
-        self.damage.mark_full();
+        self.tree.damage().mark_full();
     }
 
     /// Registers a direct-memory child surface.
     pub fn register_direct(&mut self, handle: SurfaceHandle, surface: Arc<DirectSurface>) {
         self.direct.insert(handle, surface);
-        self.damage.mark_full();
+        self.tree.damage().mark_full();
     }
 
     pub fn direct(&self, handle: SurfaceHandle) -> Option<&Arc<DirectSurface>> {
@@ -211,7 +209,7 @@ impl Surface {
 
     /// Marks the whole surface dirty.
     pub fn invalidate_all(&mut self) {
-        self.damage.mark_full();
+        self.tree.damage().mark_full();
     }
 
     /// Returns the current frame descriptor, rendering first if anything is dirty.
@@ -231,15 +229,24 @@ impl Surface {
     /// Renders dirty regions, if any.
     pub fn render_if_needed(&mut self) {
         self.tree.flush();
-        if self.damage.is_empty() {
+        if !self.tree.has_damage() {
             return;
         }
         let metrics = &self.renderer;
         self.tree.layout(metrics);
 
         let list = build(&self.tree, self.tree.scale(), &self.renderer.text, &self.renderer.images);
-        let bounds = Rect::new(0.0, 0.0, list.width as f32, list.height as f32);
-        let damage = self.damage.take(bounds);
+        // The tree works in logical pixels; the renderer works in physical ones.
+        // Damage must be converted or hovers repaint the wrong region at >1x.
+        let viewport = self.tree.viewport();
+        let logical_bounds = Rect::new(0.0, 0.0, viewport.w, viewport.h);
+        let scale = self.tree.scale();
+        let damage: Vec<Rect> = self
+            .tree
+            .take_damage(logical_bounds)
+            .into_iter()
+            .map(|rect| rect.scale(scale))
+            .collect();
         if damage.is_empty() {
             return;
         }
@@ -284,21 +291,21 @@ impl Surface {
         match event {
             UiEvent::Pointer(p) => {
                 self.tree.update_hover(Some(p.position));
-                if p.action == clover_ui::PointerAction::Down {
-                    // Focus the innermost focusable ancestor of the hit node.
-                    let chain = self.tree.hit_chain(p.position);
-                    let focus_target = chain
-                        .iter()
-                        .copied()
-                        .find(|id| self.tree.node(*id).map(|n| n.focusable).unwrap_or(false));
-                    self.tree.set_focus(focus_target);
-
-                    let id = self.hit_node(p.position);
-                    let bounds = self.hit_bounds(p.position);
-                    if let Some(node) = self.tree.node_mut(id) {
-                        node.state.pressed = true;
+                match p.action {
+                    clover_ui::PointerAction::Down => {
+                        // Focus the innermost focusable ancestor of the hit node.
+                        let chain = self.tree.hit_chain(p.position);
+                        let focus_target = chain
+                            .iter()
+                            .copied()
+                            .find(|id| self.tree.node(*id).map(|n| n.focusable).unwrap_or(false));
+                        self.tree.set_focus(focus_target);
+                        self.tree.set_pressed(chain.first().copied());
                     }
-                    self.damage.add(bounds);
+                    clover_ui::PointerAction::Up | clover_ui::PointerAction::Cancel => {
+                        self.tree.set_pressed(None);
+                    }
+                    clover_ui::PointerAction::Move => {}
                 }
             }
             UiEvent::Wheel(_) => {}
@@ -311,23 +318,6 @@ impl Surface {
         }
         clover_ui::event::route(&self.tree, &event)
     }
-
-    fn hit_node(&self, point: Point) -> NodeId {
-        self.tree
-            .hit_chain(point)
-            .first()
-            .copied()
-            .unwrap_or(NodeId(0))
-    }
-
-    fn hit_bounds(&self, point: Point) -> Rect {
-        self.tree
-            .hit_chain(point)
-            .first()
-            .and_then(|id| self.tree.node(*id))
-            .map(|n| n.bounds)
-            .unwrap_or(Rect::ZERO)
-    }
 }
 
 fn physical_size(width: f32, height: f32, scale: f32) -> (u32, u32) {
@@ -336,4 +326,53 @@ fn physical_size(width: f32, height: f32, scale: f32) -> (u32, u32) {
         (width * scale).round().max(1.0) as u32,
         (height * scale).round().max(1.0) as u32,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clover_core::{Color, Point};
+    use clover_ui::{node, style::Length, PointerAction, PointerEvent, UiEvent};
+
+    fn surface_with_button() -> Surface {
+        let root = node::panel()
+            .background(Color::BLACK)
+            .child(
+                node::panel()
+                    .size(Length::Px(20.0), Length::Px(20.0))
+                    .background(Color::rgb(0x40, 0x40, 0x40))
+                    .name("btn"),
+            );
+        let mut surface = Surface::new(root, 100.0, 100.0, 2.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        surface
+    }
+
+    #[test]
+    fn frame_is_physical_size() {
+        let surface = surface_with_button();
+        assert_eq!((surface.canvas().width, surface.canvas().height), (200, 200));
+    }
+
+    #[test]
+    fn hover_damage_is_converted_to_physical_pixels() {
+        let mut surface = surface_with_button();
+        let before = surface.canvas().pixel(20, 20).to_color();
+        let outside_before = surface.canvas().pixel(150, 150).to_color();
+
+        // Hover the 20x20 logical button at (0,0); at scale 2 that is (0,0,40,40)
+        // in physical pixels.
+        surface.dispatch(UiEvent::Pointer(PointerEvent {
+            action: PointerAction::Move,
+            position: Point::new(10.0, 10.0),
+            ..Default::default()
+        }));
+        let _ = surface.frame();
+        let after = surface.canvas().pixel(20, 20).to_color();
+        assert_ne!(before, after, "hover must repaint the physical region");
+
+        // A pixel far outside the button must be untouched by this damage.
+        assert_eq!(surface.canvas().pixel(150, 150).to_color(), outside_before);
+    }
 }
