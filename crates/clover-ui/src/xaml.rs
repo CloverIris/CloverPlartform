@@ -77,8 +77,100 @@ where
 
 /// Parses a XAML fragment into a node tree.
 pub fn parse(source: &str, images: &dyn ImageResolver) -> Result<Node, XamlError> {
+    parse_with_styles(source, images, &crate::style_sheet::StyleSheet::new())
+}
+
+/// Parses a XAML fragment applying `sheet` first; element attributes override it.
+pub fn parse_with_styles(
+    source: &str,
+    images: &dyn ImageResolver,
+    sheet: &crate::style_sheet::StyleSheet,
+) -> Result<Node, XamlError> {
     let document = parse_xml(source)?;
-    build(&document, images)
+    build(&document, images, sheet, InheritedStyle::default())
+}
+
+/// Inherited properties: text styling cascades to children, everything else does
+/// not. A child that sets `FontSize` overrides it for its own subtree.
+#[derive(Clone, Copy, Debug)]
+struct InheritedStyle {
+    font_size: f32,
+    text_color: clover_core::Color,
+}
+
+impl Default for InheritedStyle {
+    fn default() -> Self {
+        let style = crate::style::Style::default();
+        Self { font_size: style.font_size, text_color: style.text_color }
+    }
+}
+
+/// Parses a `<Styles>` document into a [`crate::style_sheet::StyleSheet`].
+pub fn parse_stylesheet(source: &str) -> Result<crate::style_sheet::StyleSheet, XamlError> {
+    use crate::style_sheet::{Selector, StyleProps, StyleRule, StyleSheet};
+
+    let document = parse_xml(source)?;
+    if !document.name.eq_ignore_ascii_case("Styles") {
+        return err(document.offset, "a stylesheet document must start with <Styles>");
+    }
+
+    let mut sheet = StyleSheet::new();
+    for child in &document.children {
+        if !child.name.eq_ignore_ascii_case("Style") {
+            return err(child.offset, format!("unsupported element <{}> in <Styles>", child.name));
+        }
+        let selector = if let Some(name) = child.attr("x:Name").or_else(|| child.attr("Name")) {
+            Selector::Name(name.to_string())
+        } else if let Some(target) = child.attr("TargetType") {
+            Selector::Type(target.to_string())
+        } else {
+            Selector::All
+        };
+
+        let mut props = StyleProps::default();
+        if let Some(v) = child.attr("Background") {
+            props.background = Some(parse_color(v, child.offset)?);
+        }
+        if let Some(v) = child.attr("Foreground") {
+            props.foreground = Some(parse_color(v, child.offset)?);
+        }
+        if let Some(v) = child.attr_f32("FontSize") {
+            props.font_size = Some(v);
+        }
+        if let Some(v) = child.attr("Padding") {
+            props.padding = Some(parse_edges(v, child.offset, "Padding")?);
+        }
+        if let Some(v) = child.attr("Margin") {
+            props.margin = Some(parse_edges(v, child.offset, "Margin")?);
+        }
+        if let Some(v) = child.attr_f32("CornerRadius") {
+            props.radius = Some(v);
+        }
+        if let Some(v) = child.attr_f32("BorderThickness") {
+            props.border_width = Some(v);
+        }
+        if let Some(v) = child.attr("BorderBrush") {
+            props.border_color = Some(parse_color(v, child.offset)?);
+        }
+        if let Some(v) = child.attr("Width") {
+            props.width = Some(
+                crate::style::Length::parse(v)
+                    .ok_or_else(|| XamlError { message: format!("bad Width '{v}'"), offset: child.offset })?,
+            );
+        }
+        if let Some(v) = child.attr("Height") {
+            props.height = Some(
+                crate::style::Length::parse(v)
+                    .ok_or_else(|| XamlError { message: format!("bad Height '{v}'"), offset: child.offset })?,
+            );
+        }
+        if let Some(v) = child.attr("TextWrapping") {
+            props.wrap = Some(v.trim().eq_ignore_ascii_case("wrap"));
+        }
+
+        sheet.push(StyleRule { selector, props });
+    }
+    Ok(sheet)
 }
 
 // ---- XML ------------------------------------------------------------------
@@ -294,7 +386,12 @@ fn decode_entities(text: &str) -> String {
 
 // ---- element mapping ------------------------------------------------------
 
-fn build(xml: &XmlNode, images: &dyn ImageResolver) -> Result<Node, XamlError> {
+fn build(
+    xml: &XmlNode,
+    images: &dyn ImageResolver,
+    sheet: &crate::style_sheet::StyleSheet,
+    inherited: InheritedStyle,
+) -> Result<Node, XamlError> {
     // Containers that synthesise their own children (Grid) must not also have the
     // raw XML children appended a second time.
     let mut consumes_children = false;
@@ -308,7 +405,7 @@ fn build(xml: &XmlNode, images: &dyn ImageResolver) -> Result<Node, XamlError> {
         }
         "grid" => {
             consumes_children = true;
-            build_grid(xml, images)?
+            build_grid(xml, images, sheet, inherited)?
         }
         "canvas" => node::stack(Orientation::Vertical).align(Align::Start).justify(Align::Start),
         "border" => node::panel(),
@@ -351,11 +448,33 @@ fn build(xml: &XmlNode, images: &dyn ImageResolver) -> Result<Node, XamlError> {
         other => return err(xml.offset, format!("unsupported element <{other}>")),
     };
 
+    // Styles are defaults; element attributes override them; text properties
+    // cascade into children.
+    let mut ctx = inherited;
+    let element_name = xml.attr("x:Name").or_else(|| xml.attr("Name"));
+    for props in sheet.resolve(&xml.name, element_name) {
+        apply_style_props(&mut node, props);
+        if let Some(v) = props.font_size {
+            ctx.font_size = v;
+        }
+        if let Some(v) = props.foreground {
+            ctx.text_color = v;
+        }
+    }
+
     apply_common_attributes(&mut node, xml)?;
+    if let Some(v) = xml.attr_f32("FontSize") {
+        ctx.font_size = v;
+    }
+    if let Some(v) = xml.attr("Foreground") {
+        ctx.text_color = parse_color(v, xml.offset)?;
+    }
+    node.style.font_size = ctx.font_size;
+    node.style.text_color = ctx.text_color;
 
     if !consumes_children {
         for child in &xml.children {
-            let child_node = build(child, images)?;
+            let child_node = build(child, images, sheet, ctx)?;
             node.children.push(child_node);
         }
     }
@@ -363,7 +482,48 @@ fn build(xml: &XmlNode, images: &dyn ImageResolver) -> Result<Node, XamlError> {
     Ok(node)
 }
 
-fn build_grid(xml: &XmlNode, images: &dyn ImageResolver) -> Result<Node, CloverGridError> {
+fn apply_style_props(node: &mut Node, props: &crate::style_sheet::StyleProps) {
+    if let Some(v) = props.background {
+        node.style.background = v;
+    }
+    if let Some(v) = props.foreground {
+        node.style.text_color = v;
+    }
+    if let Some(v) = props.font_size {
+        node.style.font_size = v;
+    }
+    if let Some(v) = props.padding {
+        node.style.padding = v;
+    }
+    if let Some(v) = props.margin {
+        node.style.margin = v;
+    }
+    if let Some(v) = props.radius {
+        node.style.radius = v;
+    }
+    if let Some(v) = props.border_width {
+        node.style.border_width = v;
+    }
+    if let Some(v) = props.border_color {
+        node.style.border_color = v;
+    }
+    if let Some(v) = props.width {
+        node.style.width = v;
+    }
+    if let Some(v) = props.height {
+        node.style.height = v;
+    }
+    if let Some(v) = props.wrap {
+        node.style.wrap = v;
+    }
+}
+
+fn build_grid(
+    xml: &XmlNode,
+    images: &dyn ImageResolver,
+    sheet: &crate::style_sheet::StyleSheet,
+    inherited: InheritedStyle,
+) -> Result<Node, CloverGridError> {
     // A uniform grid expressed with the existing stack layout: one row per
     // `Columns` children, each cell taking an equal percentage of the width.
     let columns = xml.attr("Columns").and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(1).max(1);
@@ -373,7 +533,7 @@ fn build_grid(xml: &XmlNode, images: &dyn ImageResolver) -> Result<Node, CloverG
 
     let mut row = node::row().align(Align::Stretch).gap(gap);
     for (index, child) in xml.children.iter().enumerate() {
-        let mut cell = build(child, images)?;
+        let mut cell = build(child, images, sheet, inherited)?;
         if cell.style.width == Length::Auto {
             cell.style.width = Length::Percent(1.0 / columns as f32);
         }
@@ -621,6 +781,109 @@ mod tests {
     fn rejects_mismatched_close() {
         let error = parse("<StackPanel></Border>", &NoImages).unwrap_err();
         assert!(error.message.contains("closes"));
+    }
+
+    const THEME: &str = r##"
+<Styles>
+  <Style TargetType="Button" Background="#303840" Foreground="#F0F2F5" Padding="14,8" CornerRadius="6"/>
+  <Style TargetType="TextBlock" FontSize="18" Foreground="#C8CDD3"/>
+  <Style x:Name="title" FontSize="24" Foreground="#FFFFFF"/>
+</Styles>"##;
+
+    #[test]
+    fn styles_apply_as_defaults() {
+        let sheet = parse_stylesheet(THEME).unwrap();
+        let page = parse_with_styles(
+            r#"<StackPanel><Button Content="OK"/><TextBlock Text="hi"/></StackPanel>"#,
+            &NoImages,
+            &sheet,
+        )
+        .unwrap();
+        assert_eq!(page.children[0].style.radius, 6.0);
+        assert_eq!(page.children[0].style.padding, Edges::symmetric(14.0, 8.0));
+        assert_eq!(page.children[1].style.font_size, 18.0);
+    }
+
+    #[test]
+    fn attributes_override_styles() {
+        let sheet = parse_stylesheet(THEME).unwrap();
+        let page = parse_with_styles(
+            r#"<StackPanel><Button Content="OK" FontSize="11" CornerRadius="0"/></StackPanel>"#,
+            &NoImages,
+            &sheet,
+        )
+        .unwrap();
+        assert_eq!(page.children[0].style.font_size, 11.0);
+        assert_eq!(page.children[0].style.radius, 0.0);
+    }
+
+    #[test]
+    fn name_selector_beats_type_selector() {
+        let sheet = parse_stylesheet(THEME).unwrap();
+        let page = parse_with_styles(
+            r#"<StackPanel><TextBlock Text="t" x:Name="title"/></StackPanel>"#,
+            &NoImages,
+            &sheet,
+        )
+        .unwrap();
+        assert_eq!(page.children[0].style.font_size, 24.0);
+        assert_eq!(page.children[0].style.text_color, Color::WHITE);
+    }
+
+    #[test]
+    fn text_properties_inherit_into_children() {
+        let page = parse(
+            r##"<StackPanel FontSize="22" Foreground="#112233">
+                 <Panel><TextBlock Text="deep"/></Panel>
+               </StackPanel>"##,
+            &NoImages,
+        )
+        .unwrap();
+        let deep = &page.children[0].children[0];
+        assert_eq!(deep.style.font_size, 22.0);
+        assert_eq!(deep.style.text_color, Color::rgb(0x11, 0x22, 0x33));
+    }
+
+    #[test]
+    fn child_can_break_inheritance() {
+        let page = parse(
+            r#"<StackPanel FontSize="22"><TextBlock Text="a" FontSize="9"/></StackPanel>"#,
+            &NoImages,
+        )
+        .unwrap();
+        assert_eq!(page.children[0].style.font_size, 9.0);
+    }
+
+    #[test]
+    fn wrapped_text_still_honours_inherited_size() {
+        let sheet = parse_stylesheet(THEME).unwrap();
+        let page = parse_with_styles(
+            r#"<StackPanel><TextBlock Text="a b c" TextWrapping="Wrap"/></StackPanel>"#,
+            &NoImages,
+            &sheet,
+        )
+        .unwrap();
+        assert!(page.children[0].style.wrap);
+        assert_eq!(page.children[0].style.font_size, 18.0);
+    }
+
+    #[test]
+    fn stylesheet_requires_styles_root() {
+        assert!(parse_stylesheet("<Style TargetType=\"Button\"/>").is_err());
+    }
+
+    #[test]
+    fn stylesheet_rejects_unknown_children() {
+        assert!(parse_stylesheet(r#"<Styles><Nope/></Styles>"#).is_err());
+    }
+
+    #[test]
+    fn empty_stylesheet_is_a_no_op() {
+        let sheet = parse_stylesheet(r#"<Styles></Styles>"#).unwrap();
+        assert!(sheet.is_empty());
+        let a = parse(r#"<TextBlock Text="x" FontSize="13"/>"#, &NoImages).unwrap();
+        let b = parse_with_styles(r#"<TextBlock Text="x" FontSize="13"/>"#, &NoImages, &sheet).unwrap();
+        assert_eq!(a.style.font_size, b.style.font_size);
     }
 
     #[test]

@@ -9,7 +9,12 @@ repository so it can be reused elsewhere.
 
 ![The same layout scrolled four wheel notches](docs/screenshot-scroll.png)
 
-> Status: **0.3 — scrolling**. The pipeline works end to end (tree →
+One page, two stylesheets — no colour appears in the markup:
+
+![Dark theme](docs/theme-dark.png)
+![Light theme](docs/theme-light.png)
+
+> Status: **0.4 — styling**. The pipeline works end to end (tree →
 > layout → display list → tile-parallel raster → frame), both authoring
 > front-ends produce the same tree, layout supports flex-style `Fill`, text
 > wraps, and keyboard focus is routed. Styles, templates, bindings and animation
@@ -32,6 +37,9 @@ repository so it can be reused elsewhere.
   rectangles and borders.
 * **Keyboard focus.** Tab / Shift+Tab traversal over focusable nodes, and key
   events routed through capture → target → bubble along the focused node.
+* **Stylesheets.** `<Styles>` with type, name and universal selectors, ordered by
+  specificity. Styles provide defaults; attributes on the element win; font size
+  and text colour cascade into children.
 * **Scrolling.** Vertical scroll containers (`ScrollViewer`, `Node::scrollable`)
   clamp their offset against the laid-out content and paint a scrollbar. Wheel
   events route to the nearest scrollable ancestor.
@@ -144,7 +152,7 @@ UiTree ──layout──► absolute bounds ──build──► DisplayList (p
 Near term:
 
 - text runs with mixed styles (bold spans, ellipsis, alignment per run),
-- XAML styles, templates, property elements and `{Binding}`,
+- control templates and `{Binding}` (styles are in; templating is next),
 - focus visuals: the framework routes focus, skins still draw it,
 - horizontal scrolling and scroll-into-view on focus,
 - region-level opacity layers.

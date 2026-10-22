@@ -88,7 +88,22 @@ layout and rasterisation disagree and text overflows its box. That is why
 `LayoutMetrics::measure_text` takes the optional max width instead of leaving
 wrapping to the renderer.
 
-## 6. Scrolling
+## 6. Styles
+
+A stylesheet is an ordered list of `(selector, partial properties)` rules. Only
+three selector forms exist — universal, element type, and `x:Name` — which is
+enough to theme a control set without writing a CSS engine.
+
+Application order is specificity first, document order second, so a name selector
+always beats a type selector no matter where it appears. Styles are applied
+*before* element attributes, and attributes always win: the stylesheet is a set
+of defaults, never an override, which keeps the markup readable when one element
+needs to differ.
+
+Font size and text colour cascade explicitly through a build-time context rather
+than by re-walking the tree. Inheritance flows down; anything else stays local.
+
+## 7. Scrolling
 
 A scroll container is a **viewport**; that word is doing real work. During
 measure it reports `min(content, available)` instead of its content height.
@@ -104,7 +119,7 @@ children out in a box shifted up by the offset. Wheel events route to the neares
 scrollable ancestor of the hit node; the scrollbar is emitted after the children
 so it paints on top.
 
-## 7. Focus
+## 8. Focus
 
 Focus lives on `UiTree`, not on the platform layer: `set_focus` and `focus_next`
 update `NodeState::focused` and mark the affected bounds dirty. Traversal order is
@@ -114,7 +129,7 @@ Pointer-down focuses the innermost focusable ancestor of the hit node, and
 Tab/Shift+Tab are consumed by `Surface::dispatch` before routing. Everything else
 routes from the focused node.
 
-## 8. Direct-memory surfaces
+## 9. Direct-memory surfaces
 
 A `DirectSurface` is a pixel buffer that another thread owns and writes.
 
@@ -138,7 +153,7 @@ one. That is the swap-chain consistency guarantee.
 The C ABI exposes this as `clover_direct_begin_write` / `clover_direct_commit`,
 which is exactly the "give me the memory address" escape hatch.
 
-## 9. Pixel format
+## 10. Pixel format
 
 Internally, and on the frame handed to hosts: **premultiplied BGRA8 in `u32`**
 (`0xAARRGGBB`, memory order B,G,R,A on little-endian).
@@ -150,7 +165,7 @@ only at export boundaries (PNG).
 This also matches CloverPic's `RgbaFrame`, so a CloverPlatform surface can be
 handed to the existing adapters without a conversion pass.
 
-## 10. C ABI boundary
+## 11. C ABI boundary
 
 The host keeps: window creation, the event loop, platform input, and presenting
 pixels. CloverPlatform keeps: the tree, layout, rasterisation and the frame
@@ -170,6 +185,6 @@ surface.
   and focus does not reveal an off-screen node yet.
 * **Mixed-style text runs.** Wrapping currently assumes one font size and one
   colour per node, so a bold span forces a whole extra node.
-* **Styles.** XAML attributes are read verbatim per element. A style/template
-  layer needs selector matching before `{Binding}` makes sense.
+* **Templates and bindings.** Styles cover values but not structure: there is no
+  control template, and no data binding yet.
 * **Animation.** No scheduler yet; the host decides when to ask for a frame.

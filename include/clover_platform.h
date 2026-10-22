@@ -102,6 +102,14 @@ typedef struct clover_stats {
 clover_surface *clover_surface_create_from_xaml(float width, float height, float scale,
                                                 const char *xaml_utf8);
 
+/*
+ * Creates a surface from a XAML page plus a `<Styles>` document. The stylesheet
+ * provides defaults; attributes written on the page override it.
+ */
+clover_surface *clover_surface_create_from_xaml_with_styles(float width, float height, float scale,
+                                                            const char *xaml_utf8,
+                                                            const char *styles_utf8);
+
 /* Creates a surface with an empty root panel. */
 clover_surface *clover_surface_create_empty(float width, float height, float scale);
 

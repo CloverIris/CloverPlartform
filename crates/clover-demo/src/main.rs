@@ -96,6 +96,18 @@ fn main() {
     println!("  focus order      : {}", focus_order.join(" -> "));
     println!("  output           : {}", out.display());
     println!("  scrolled output  : {} (4 wheel notches)", scrolled.display());
+
+    // The same page, one stylesheet each. No colour appears in the markup.
+    for (name, sheet) in [("dark", DARK_THEME), ("light", LIGHT_THEME)] {
+        let sheet = xaml::parse_stylesheet(sheet).expect("theme parses");
+        let page = xaml::parse_with_styles(THEME_PAGE, &xaml::NoImages, &sheet).expect("themed page");
+        let mut themed = Surface::new(page, 420.0, 300.0, 2.0).expect("system font required");
+        themed.invalidate_all();
+        let _ = themed.frame();
+        let path = std::path::PathBuf::from(format!("demo-theme-{name}.png"));
+        write_png(&path, &themed).expect("write themed png");
+        println!("  theme {name:<11}: {}", path.display());
+    }
 }
 
 /// Names of the focusable nodes in tab order.
@@ -190,6 +202,54 @@ fn layer_row(label: &str, active: bool) -> Node {
         .radius(4.0)
         .child(node::text(label).font_size(12.0).text_color(Color::rgb(0xD6, 0xDB, 0xE1)))
 }
+
+/// A settings card described once, entirely uncoloured: every colour, radius and
+/// size comes from the stylesheet.
+const THEME_PAGE: &str = r##"
+<StackPanel x:Name="root" Width="Fill" Height="Fill">
+  <StackPanel x:Name="titlebar" Orientation="Horizontal" Spacing="10">
+    <TextBlock Text="APPEARANCE" x:Name="title"/>
+  </StackPanel>
+  <StackPanel x:Name="card" Spacing="12">
+    <TextBlock Text="Theme" x:Name="cardTitle"/>
+    <TextBlock Text="Changes apply immediately to every open window, including panels that are already floating." TextWrapping="Wrap"/>
+    <StackPanel Orientation="Horizontal" Spacing="8">
+      <Button Content="Dark"   x:Name="primary"/>
+      <Button Content="Light"/>
+      <Button Content="System"/>
+    </StackPanel>
+    <TextBlock Text="Colours, radii and spacing above all come from a stylesheet." x:Name="footnote"/>
+  </StackPanel>
+</StackPanel>
+"##;
+
+const DARK_THEME: &str = r##"
+<Styles>
+  <Style TargetType="TextBlock" FontSize="13" Foreground="#D7DBE0"/>
+  <Style TargetType="Button" FontSize="13" Padding="16,8" CornerRadius="6"
+         Background="#333A42" Foreground="#F2F5F7"/>
+  <Style x:Name="title" FontSize="11" Foreground="#8B939D"/>
+  <Style x:Name="root" Background="#15171A"/>
+  <Style x:Name="titlebar" Padding="18,14" Background="#1E2126"/>
+  <Style x:Name="card" Background="#1E2126" CornerRadius="10" Padding="18" Margin="18"/>
+  <Style x:Name="cardTitle" FontSize="18" Foreground="#FFFFFF"/>
+  <Style x:Name="primary" Background="#2F6FD0" BorderThickness="1" BorderBrush="#4C8DE8"/>
+  <Style x:Name="footnote" FontSize="11" Foreground="#7E8792"/>
+</Styles>"##;
+
+const LIGHT_THEME: &str = r##"
+<Styles>
+  <Style TargetType="TextBlock" FontSize="13" Foreground="#2A2F36"/>
+  <Style TargetType="Button" FontSize="13" Padding="16,8" CornerRadius="6"
+         Background="#E7EAEE" Foreground="#1B1F24"/>
+  <Style x:Name="title" FontSize="11" Foreground="#6B7480"/>
+  <Style x:Name="root" Background="#F4F6F8"/>
+  <Style x:Name="titlebar" Padding="18,14" Background="#FFFFFF"/>
+  <Style x:Name="card" Background="#FFFFFF" CornerRadius="10" Padding="18" Margin="18"/>
+  <Style x:Name="cardTitle" FontSize="18" Foreground="#101317"/>
+  <Style x:Name="primary" Background="#2F6FD0" Foreground="#FFFFFF" BorderThickness="1" BorderBrush="#2A64BC"/>
+  <Style x:Name="footnote" FontSize="11" Foreground="#7B838D"/>
+</Styles>"##;
 
 /// Writes premultiplied pixels straight into the direct surface.
 fn paint_canvas(canvas: &Arc<DirectSurface>) {

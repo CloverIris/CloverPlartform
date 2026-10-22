@@ -27,6 +27,7 @@ pub mod event;
 pub mod layout;
 pub mod node;
 pub mod style;
+pub mod style_sheet;
 pub mod xaml;
 
 pub use event::{
@@ -36,3 +37,4 @@ pub use event::{
 pub use layout::{EmptyMetrics, LayoutMetrics};
 pub use node::{ImageHandle, Node, NodeId, NodeMode, SurfaceHandle, UiTree, View};
 pub use style::{Fit, Length, NodeState, Style};
+pub use style_sheet::{Selector, StyleProps, StyleRule, StyleSheet};

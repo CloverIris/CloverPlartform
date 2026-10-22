@@ -86,6 +86,38 @@ pub unsafe extern "C" fn clover_surface_create_from_xaml(
     create(root, width, height, scale)
 }
 
+/// Creates a surface from a XAML document and a `<Styles>` document.
+///
+/// The stylesheet supplies defaults; attributes on the page override it.
+///
+/// # Safety
+/// Both pointers must be valid NUL-terminated UTF-8 strings.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_create_from_xaml_with_styles(
+    width: f32,
+    height: f32,
+    scale: f32,
+    xaml_utf8: *const c_char,
+    styles_utf8: *const c_char,
+) -> *mut CloverSurface {
+    if xaml_utf8.is_null() || styles_utf8.is_null() {
+        return std::ptr::null_mut();
+    }
+    let (Ok(source), Ok(styles)) = (
+        CStr::from_ptr(xaml_utf8).to_str(),
+        CStr::from_ptr(styles_utf8).to_str(),
+    ) else {
+        return std::ptr::null_mut();
+    };
+    let Ok(sheet) = xaml::parse_stylesheet(styles) else {
+        return std::ptr::null_mut();
+    };
+    let Ok(root) = xaml::parse_with_styles(source, &xaml::NoImages, &sheet) else {
+        return std::ptr::null_mut();
+    };
+    create(root, width, height, scale)
+}
+
 /// Creates a surface from a tree built in Rust and handed over.
 #[no_mangle]
 pub extern "C" fn clover_surface_create_empty(width: f32, height: f32, scale: f32) -> *mut CloverSurface {

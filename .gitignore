@@ -1,4 +1,3 @@
 /target
 Cargo.lock.bak
-demo.png
-demo-scrolled.png
+demo*.png
