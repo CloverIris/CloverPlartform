@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use clover_core::{Premul, Rect, Size};
-use clover_ui::{node::Node, NodeId, RouteEntry, SurfaceHandle, UiEvent, UiTree};
+use clover_ui::{node::Node, NodeId, RouteEntry, SurfaceHandle, UiEvent, UiTree, View};
 
 use crate::canvas::Canvas;
 use crate::display_list::build;
@@ -308,6 +308,101 @@ impl Surface {
         })
     }
 
+    /// Applies one keystroke to the focused text field.
+    ///
+    /// Editing keys are handled here rather than by the host because the caret
+    /// and the buffer belong to the tree; the host only learns that the text
+    /// changed, and reads it back when it cares.
+    fn edit_text_input(&mut self, focused: NodeId, key: u32, modifiers: clover_ui::Modifiers) {
+        let mut changed = false;
+        let mut submit = false;
+        let mut bounds = Rect::ZERO;
+        let mut name: Option<String> = None;
+
+        if let Some(node) = self.tree.node_mut(focused) {
+            bounds = node.bounds;
+            name = node.name.clone();
+            if let View::TextInput { text, caret, .. } = &mut node.view {
+                let mut position = (*caret).min(text.len());
+                match key {
+                    0x08 => {
+                        if position > 0 {
+                            let previous = previous_boundary(text, position);
+                            text.replace_range(previous..position, "");
+                            position = previous;
+                            changed = true;
+                        }
+                    }
+                    0x2E => {
+                        if position < text.len() {
+                            let next = next_boundary(text, position);
+                            text.replace_range(position..next, "");
+                            changed = true;
+                        }
+                    }
+                    0x25 => position = previous_boundary(text, position),
+                    0x27 => position = next_boundary(text, position),
+                    0x24 => position = 0,
+                    0x23 => position = text.len(),
+                    0x0D => submit = true,
+                    // Printable ASCII; letters arrive as virtual-key upper case.
+                    _ if (0x20..=0x7E).contains(&key) => {
+                        if let Some(ch) = char::from_u32(key) {
+                            let ch = if ch.is_ascii_uppercase() && !modifiers.shift() {
+                                ch.to_ascii_lowercase()
+                            } else {
+                                ch
+                            };
+                            text.insert(position, ch);
+                            position += ch.len_utf8();
+                            changed = true;
+                        }
+                    }
+                    _ => {}
+                }
+                *caret = position;
+            }
+        }
+
+        if changed || submit {
+            self.tree.damage().add(bounds);
+        }
+        if let Some(name) = name {
+            if submit {
+                self.pending_actions.push(format!("submit:{name}"));
+            } else if changed {
+                self.pending_actions.push(format!("text:{name}"));
+            }
+        }
+    }
+
+    /// Current contents of a named text field.
+    pub fn text_of(&self, name: &str) -> Option<String> {
+        match self.tree.named(name).map(|node| &node.view) {
+            Some(View::TextInput { text, .. }) => Some(text.clone()),
+            _ => None,
+        }
+    }
+
+    /// Replaces the contents of a named text field and moves the caret to the end.
+    pub fn set_text(&mut self, name: &str, value: impl Into<String>) -> bool {
+        let value = value.into();
+        let mut bounds = Rect::ZERO;
+        let mut found = false;
+        if let Some(node) = self.tree.named_mut(name) {
+            if let View::TextInput { text, caret, .. } = &mut node.view {
+                *text = value;
+                *caret = text.len();
+                bounds = node.bounds;
+                found = true;
+            }
+        }
+        if found {
+            self.tree.damage().add(bounds);
+        }
+        found
+    }
+
     /// Pops the next action raised by input, if any.
     pub fn take_action(&mut self) -> Option<String> {
         if self.pending_actions.is_empty() {
@@ -390,6 +485,17 @@ impl Surface {
                     if k.key == 0x09 && !k.repeat {
                         self.tree.focus_next(k.modifiers.shift());
                     }
+                    let editing = self
+                        .tree
+                        .focus()
+                        .map(|id| matches!(self.tree.node(id).map(|n| &n.view), Some(View::TextInput { .. })))
+                        .unwrap_or(false);
+                    if editing {
+                        if let Some(focused) = self.tree.focus() {
+                            self.edit_text_input(focused, k.key, k.modifiers);
+                        }
+                        return clover_ui::event::route(&self.tree, &event);
+                    }
                     // Enter and Space activate whatever has focus.
                     if k.key == 0x0D || k.key == 0x20 {
                         let action = self
@@ -406,6 +512,22 @@ impl Surface {
         }
         clover_ui::event::route(&self.tree, &event)
     }
+}
+
+fn previous_boundary(text: &str, position: usize) -> usize {
+    let mut index = position.saturating_sub(1);
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+fn next_boundary(text: &str, position: usize) -> usize {
+    let mut index = (position + 1).min(text.len());
+    while index < text.len() && !text.is_char_boundary(index) {
+        index += 1;
+    }
+    index
 }
 
 fn physical_size(width: f32, height: f32, scale: f32) -> (u32, u32) {
@@ -441,6 +563,54 @@ mod tests {
     fn frame_is_physical_size() {
         let surface = surface_with_button();
         assert_eq!((surface.canvas().width, surface.canvas().height), (200, 200));
+    }
+
+    #[test]
+    fn typing_edits_the_focused_text_field() {
+        let root = node::column()
+            .background(Color::BLACK)
+            .child(node::text_input("", "Search").name("search").width(Length::Px(150.0)));
+        let mut surface = Surface::new(root, 200.0, 60.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        surface.tree_mut().focus_next(false);
+
+        let press = |surface: &mut Surface, key: u32| {
+            surface.dispatch(UiEvent::Key(clover_ui::KeyEvent {
+                action: clover_ui::KeyAction::Down,
+                key,
+                modifiers: clover_ui::Modifiers::NONE,
+                repeat: false,
+            }));
+        };
+        press(&mut surface, 'A' as u32);
+        press(&mut surface, 'B' as u32);
+        assert_eq!(surface.text_of("search").as_deref(), Some("ab"));
+        // One change event per keystroke.
+        assert_eq!(surface.take_action().as_deref(), Some("text:search"));
+        assert_eq!(surface.take_action().as_deref(), Some("text:search"));
+        assert_eq!(surface.take_action(), None);
+
+        press(&mut surface, 0x08); // backspace
+        assert_eq!(surface.text_of("search").as_deref(), Some("a"));
+
+        press(&mut surface, 0x24); // home
+        press(&mut surface, 'X' as u32);
+        assert_eq!(surface.text_of("search").as_deref(), Some("xa"));
+
+        while surface.take_action().is_some() {}
+        press(&mut surface, 0x0D); // enter
+        assert_eq!(surface.take_action().as_deref(), Some("submit:search"));
+    }
+
+    #[test]
+    fn set_text_updates_the_buffer_and_caret() {
+        let root = node::panel().child(node::text_input("old", "").name("field"));
+        let mut surface = Surface::new(root, 200.0, 60.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        assert!(surface.set_text("field", "new value"));
+        assert_eq!(surface.text_of("field").as_deref(), Some("new value"));
     }
 
     #[test]

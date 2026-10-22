@@ -135,7 +135,20 @@ children out in a box shifted up by the offset. Wheel events route to the neares
 scrollable ancestor of the hit node; the scrollbar is emitted after the children
 so it paints on top.
 
-## 9. Actions
+## 9. Text fields
+
+A text field owns its buffer and caret in the tree, not in the host. Editing keys
+are consumed by `Surface::dispatch` before the normal key path, so the widget
+needs no event plumbing of its own.
+
+The host learns about edits through actions (`text:<name>`, `submit:<name>`) and
+reads the value back with `clover_surface_get_text`. That keeps the ownership
+clear: the framework holds transient editing state, the host holds the meaning.
+
+Known limits: no selection, no clipboard, no IME, no horizontal scrolling of
+long contents, and the caret does not blink.
+
+## 10. Actions
 
 A node can carry a string command (`x:Name`-style authoring: `Command="save"`).
 Activation is the framework's job; meaning is the host's.
@@ -152,7 +165,7 @@ them after pushing input, which keeps re-entrancy out of the framework: an actio
 handler can mutate the tree (`clover_surface_set_visible`) without the input
 stack pointing at stale nodes.
 
-## 10. Focus
+## 11. Focus
 
 Focus lives on `UiTree`, not on the platform layer: `set_focus` and `focus_next`
 update `NodeState::focused` and mark the affected bounds dirty. Traversal order is
@@ -162,7 +175,7 @@ Pointer-down focuses the innermost focusable ancestor of the hit node, and
 Tab/Shift+Tab are consumed by `Surface::dispatch` before routing. Everything else
 routes from the focused node.
 
-## 11. Direct-memory surfaces
+## 12. Direct-memory surfaces
 
 A `DirectSurface` is a pixel buffer that another thread owns and writes.
 
@@ -186,7 +199,7 @@ one. That is the swap-chain consistency guarantee.
 The C ABI exposes this as `clover_direct_begin_write` / `clover_direct_commit`,
 which is exactly the "give me the memory address" escape hatch.
 
-## 12. Pixel format
+## 13. Pixel format
 
 Internally, and on the frame handed to hosts: **premultiplied BGRA8 in `u32`**
 (`0xAARRGGBB`, memory order B,G,R,A on little-endian).
@@ -198,7 +211,7 @@ only at export boundaries (PNG).
 This also matches CloverPic's `RgbaFrame`, so a CloverPlatform surface can be
 handed to the existing adapters without a conversion pass.
 
-## 13. C ABI boundary
+## 14. C ABI boundary
 
 The host keeps: window creation, the event loop, platform input, and presenting
 pixels. CloverPlatform keeps: the tree, layout, rasterisation and the frame

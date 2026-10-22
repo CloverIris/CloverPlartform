@@ -107,6 +107,13 @@ pub fn measure(node: &Node, available: Size, metrics: &dyn LayoutMetrics) -> Siz
             content.w = content.w.max(capped);
             content.h = content.h.max(text_size.h);
         }
+        View::TextInput { text, placeholder, .. } => {
+            let shown = if text.is_empty() { placeholder } else { text };
+            let max_width = if inner_width > 0.0 { Some(inner_width) } else { None };
+            let size = metrics.measure_text(shown, style.font_size, max_width);
+            content.w = content.w.max(size.w);
+            content.h = content.h.max(metrics.line_height(style.font_size));
+        }
         View::Image { handle, .. } => {
             let natural = metrics.measure_image(*handle);
             content.w = content.w.max(natural.w);

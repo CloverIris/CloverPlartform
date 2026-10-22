@@ -17,6 +17,7 @@
 //! | `Button` | `Content` |
 //! | `Image` | `Source` resolved through an [`ImageResolver`] |
 //! | `ScrollViewer` | vertical scrolling container |
+//! | `TextBox` | `Text`, `Placeholder`; editable, focusable |
 //! | `CloverSurface` | `Id`, a direct-memory child surface |
 //!
 //! `Command="id"` on any element makes it actionable: clicking it, or pressing
@@ -571,6 +572,15 @@ fn build(
                 None => return err(xml.offset, format!("image source '{source}' was not registered")),
             }
         }
+        "textbox" | "textfield" => {
+            let text = xml.attr("Text").map(|v| context.data.resolve_text(v)).unwrap_or_default();
+            let placeholder = xml
+                .attr("Placeholder")
+                .or_else(|| xml.attr("Watermark"))
+                .map(|v| context.data.resolve_text(v))
+                .unwrap_or_default();
+            node::text_input(text, placeholder)
+        }
         "cloversurface" | "surface" => {
             let id = xml
                 .attr("Id")
@@ -896,6 +906,29 @@ mod tests {
     fn parses_inner_text_when_attribute_missing() {
         let root = parse("<TextBlock>Hello &amp; bye</TextBlock>", &NoImages).unwrap();
         assert_eq!(root.view, node::View::Text("Hello & bye".into()));
+    }
+
+    #[test]
+    fn parses_text_boxes_with_bindings() {
+        let data = crate::binding::DataContext::new()
+            .set("query", crate::binding::Value::Text("brush".into()));
+        let page = parse_with_data(
+            r#"<StackPanel><TextBox x:Name="search" Text="{Binding query}" Placeholder="Search"/></StackPanel>"#,
+            &NoImages,
+            &crate::style_sheet::StyleSheet::new(),
+            &data,
+        )
+        .unwrap();
+        let field = &page.children[0];
+        match &field.view {
+            node::View::TextInput { text, placeholder, caret } => {
+                assert_eq!(text, "brush");
+                assert_eq!(placeholder, "Search");
+                assert_eq!(*caret, 5);
+            }
+            other => panic!("expected a text input, got {other:?}"),
+        }
+        assert!(field.focusable, "text fields take keyboard focus");
     }
 
     #[test]

@@ -5,6 +5,7 @@
     <Value Key="accent" Color="#2F6FD0"/>
     <Value Key="zoom" Number="141"/>
     <Value Key="tool" Text="Brush"/>
+    <Value Key="filter" Text=""/>
   </Data>
 
   <Styles>
@@ -26,6 +27,9 @@
       <Button Content="Brush"/>
       <Button Content="Eraser"/>
       <Button Content="Fill"/>
+      <TextBox x:Name="filter" Text="{Binding filter}" Placeholder="Filter layers..."
+               Width="180" Height="30" Background="#1B1E22" Foreground="#E8ECF0"
+               CornerRadius="5" BorderThickness="1" BorderBrush="#3B4048"/>
     </StackPanel>
 
     <StackPanel Orientation="Horizontal" Spacing="12" Padding="12" Width="Fill" Height="Fill">

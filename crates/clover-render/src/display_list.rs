@@ -176,6 +176,38 @@ fn walk(
                 out.push(DrawCmd::Image { rect: fitted, image: Arc::clone(image), clip });
             }
         }
+        View::TextInput { text: value, placeholder, caret } => {
+            let content_box = node.style.padding.deflate(node.bounds).scale(scale);
+            let font_px = (node.style.font_size * scale).max(1.0);
+            let empty = value.is_empty();
+            let shown: &str = if empty { placeholder } else { value };
+            let color = if empty {
+                node.style.text_color.scale_alpha(0.55)
+            } else {
+                node.style.text_color
+            };
+            if !shown.is_empty() {
+                let baseline = content_box.y + ((content_box.h - text.line_height(font_px)) * 0.5).max(0.0)
+                    + text.ascent(font_px);
+                let run = text.shape(shown, font_px, content_box.x, baseline);
+                if !run.is_empty() {
+                    out.push(DrawCmd::Text { run: Arc::new(run), color: with_opacity(color), clip });
+                }
+            }
+            // Caret, only while focused: a 1px bar at the caret offset.
+            if node.state.focused {
+                let prefix = &value[..(*caret).min(value.len())];
+                let caret_x = content_box.x + text.line_width(prefix, font_px);
+                let caret_top = content_box.y + 2.0 * scale;
+                let caret_height = (content_box.h - 4.0 * scale).max(font_px);
+                out.push(DrawCmd::RoundedRect {
+                    rect: Rect::new(caret_x, caret_top, (1.5 * scale).max(1.0), caret_height),
+                    radius: 0.0,
+                    color: with_opacity(node.style.text_color),
+                    clip,
+                });
+            }
+        }
         View::Surface { handle } => {
             let content_box = node.style.padding.deflate(node.bounds).scale(scale);
             out.push(DrawCmd::Surface { rect: content_box, handle: *handle, clip });

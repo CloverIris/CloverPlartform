@@ -62,6 +62,9 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 * **Data binding.** `{Binding key}` in any attribute, resolved at build time from
   a flat key → value map. Typed values (colour, number, bool) bypass the string
   round-trip.
+* **Editable text fields.** `<TextBox>` supports focus, caret, typing,
+  backspace/delete, arrows, Home/End and Enter-to-submit, and reports
+  `text:<name>` / `submit:<name>` actions.
 * **Scrolling.** Vertical scroll containers (`ScrollViewer`, `Node::scrollable`)
   clamp their offset against the laid-out content and paint a scrollbar. Wheel
   events route to the nearest scrollable ancestor.

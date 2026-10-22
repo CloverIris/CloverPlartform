@@ -225,6 +225,19 @@ clover_result clover_direct_resize(clover_surface *surface, uint64_t handle, uin
 clover_result clover_surface_node_bounds(clover_surface *surface, const char *name_utf8,
                                          clover_rect *out);
 
+/*
+ * Text fields
+ * -----------
+ * `<TextBox x:Name="search" Text="{Binding query}" Placeholder="Search"/>` is
+ * editable: clicking it focuses it, and typing edits the buffer. The host is told
+ * through `text:<name>` / `submit:<name>` actions and reads the value back here.
+ */
+int32_t clover_surface_get_text(clover_surface *surface, const char *name_utf8, char *buffer,
+                                uint32_t capacity);
+
+clover_result clover_surface_set_text(clover_surface *surface, const char *name_utf8,
+                                      const char *text_utf8);
+
 /* Registers a PNG image and returns its handle, or 0 on failure. */
 uint64_t clover_surface_add_image_png(clover_surface *surface, const char *path_utf8);
 

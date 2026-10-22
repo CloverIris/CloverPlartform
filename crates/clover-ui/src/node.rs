@@ -59,7 +59,17 @@ pub enum View {
     Image { handle: ImageHandle, fit: Fit },
     /// A child surface whose pixels are written by another thread.
     Surface { handle: SurfaceHandle },
+    /// An editable single-line text field.
+    TextInput {
+        /// Current contents.
+        text: String,
+        /// Shown when `text` is empty.
+        placeholder: String,
+        /// Byte index of the caret inside `text`.
+        caret: usize,
+    },
 }
+
 
 /// Scroll state for a container whose content may exceed its box.
 ///
@@ -292,6 +302,15 @@ impl Node {
         self
     }
 
+    /// Makes this node an editable single-line text field.
+    pub fn text_input(mut self, text: impl Into<String>, placeholder: impl Into<String>) -> Self {
+        let text = text.into();
+        let caret = text.len();
+        self.view = View::TextInput { text, placeholder: placeholder.into(), caret };
+        self.focusable = true;
+        self
+    }
+
     /// Reports `action` to the host when this node is activated by a click or a
     /// key press.
     pub fn action(mut self, action: impl Into<String>) -> Self {
@@ -515,6 +534,11 @@ pub fn button(label: impl Into<String>) -> Node {
 /// An image drawn from the tree's image registry.
 pub fn image(handle: ImageHandle) -> Node {
     Node::with_view(View::Image { handle, fit: Fit::Contain })
+}
+
+/// An editable single-line text field.
+pub fn text_input(text: impl Into<String>, placeholder: impl Into<String>) -> Node {
+    Node::new().text_input(text, placeholder)
 }
 
 /// A child surface whose pixels another thread writes directly.
