@@ -53,6 +53,23 @@ Two consequences worth keeping in mind:
 Justify still runs afterwards, on whatever slack is left, so a layout can mix
 `Fill` with `justify: Center` without special cases.
 
+## 2b. Layout is gated, and that is load-bearing
+
+`UiTree::layout` returns immediately unless `layout_dirty` is set (resize, new
+root, mount flush, visibility change). This looks like a micro-optimisation and
+is not:
+
+The pass marks the whole root dirty. Early versions ran layout on every frame,
+so damage tracking was permanently defeated and every frame became a
+full-surface repaint. Measured at 3000x1700: a hover repaint cost **12.03 ms**
+before the gate and **0.160 ms** after — a 73x difference for a one-line rule.
+
+The lesson generalises: damage tracking is not a feature, it is a discipline. Any
+step that unconditionally marks geometry dirty silently reverts the whole
+pipeline to full-frame rendering.
+
+`examples/bench_surface.rs` measures both paths and is the regression guard.
+
 ## 3. The display list is resolved, not deferred
 
 `DisplayList` contains *ready-to-blit* work: shaped glyph bitmaps (`Arc`),

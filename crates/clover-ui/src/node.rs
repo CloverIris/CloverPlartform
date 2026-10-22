@@ -659,6 +659,8 @@ pub struct UiTree {
     damage: clover_core::Damage,
     focus: Option<NodeId>,
     pressed: Option<NodeId>,
+    /// Set when geometry must be recomputed; cleared after the layout pass.
+    layout_dirty: bool,
 }
 
 impl UiTree {
@@ -672,6 +674,7 @@ impl UiTree {
             damage: clover_core::Damage::new(),
             focus: None,
             pressed: None,
+            layout_dirty: true,
         }
     }
 
@@ -693,6 +696,7 @@ impl UiTree {
         self.pressed = None;
         self.mounts.clear();
         self.invalidated.clear();
+        self.layout_dirty = true;
         self.damage.mark_full();
     }
 
@@ -725,6 +729,7 @@ impl UiTree {
         }
         self.viewport = viewport;
         self.scale = scale.max(0.01);
+        self.layout_dirty = true;
         self.damage.mark_full();
     }
 
@@ -770,6 +775,7 @@ impl UiTree {
             None => self.root.children.push(mount_node),
         }
         self.mounts.insert(mount_id, builder);
+        self.layout_dirty = true;
         self.damage.mark_full();
         mount_id
     }
@@ -797,6 +803,7 @@ impl UiTree {
             changed = true;
         }
         if changed {
+            self.layout_dirty = true;
             self.damage.mark_full();
         }
         changed
@@ -903,8 +910,28 @@ impl UiTree {
 
     /// Runs the layout pass for the current viewport.
     pub fn layout(&mut self, metrics: &dyn crate::layout::LayoutMetrics) {
+        if !self.layout_dirty {
+            return;
+        }
         crate::layout::layout(&mut self.root, self.viewport, metrics);
-        self.damage.add(self.root.bounds);
+        self.layout_dirty = false;
+        // Geometry moved, so everything on screen may have moved with it.
+        self.damage.mark_full();
+    }
+
+    /// A structural change happened: geometry must be recomputed.
+    ///
+    /// Re-running layout every frame looks harmless but is not: the pass marks
+    /// the whole root dirty, so damage tracking is defeated and every frame
+    /// becomes a full-surface repaint. That is the most expensive mistake this
+    /// file has made.
+    pub fn invalidate_layout(&mut self) {
+        self.layout_dirty = true;
+    }
+
+    /// Whether a layout pass is pending.
+    pub fn needs_layout(&self) -> bool {
+        self.layout_dirty
     }
 
     /// Hit-tests `point` and returns the node chain from deepest to root.

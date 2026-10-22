@@ -1041,3 +1041,51 @@ mod tests {
         assert_eq!(surface.canvas().pixel(150, 150).to_color(), outside_before);
     }
 }
+
+#[cfg(test)]
+mod damage_tests {
+    use super::*;
+    use clover_core::Color;
+    use clover_ui::{node, style::Length};
+
+    fn surface() -> Surface {
+        let root = node::column()
+            .background(Color::BLACK)
+            .child(node::panel().size(Length::Px(40.0), Length::Px(40.0)).background(Color::WHITE).name("btn"));
+        let mut surface = Surface::new(root, 200.0, 100.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        surface
+    }
+
+    #[test]
+    fn layout_runs_once_and_is_then_clean() {
+        let surface = surface();
+        assert!(!surface.tree().needs_layout(), "first frame settles layout");
+    }
+
+    #[test]
+    fn a_second_frame_without_changes_does_no_work() {
+        let mut surface = surface();
+        let generation = surface.frame().generation;
+        // Nothing changed: no layout, no damage, no new frame.
+        let again = surface.frame().generation;
+        assert_eq!(generation, again, "an idle frame must not re-render");
+    }
+
+    #[test]
+    fn hover_only_renders_the_damaged_region() {
+        let mut surface = surface();
+        surface.dispatch(UiEvent::Pointer(clover_ui::PointerEvent {
+            action: clover_ui::PointerAction::Move,
+            position: clover_core::Point::new(20.0, 20.0),
+            ..Default::default()
+        }));
+        let _ = surface.frame();
+        assert_eq!(
+            surface.renderer_mut().last_tile_count(),
+            1,
+            "a 40x40 hover must repaint one tile, not the whole surface"
+        );
+    }
+}

@@ -378,6 +378,8 @@ pub unsafe extern "C" fn clover_surface_set_visible(
         }
         None => return CloverResult::UnknownHandle,
     };
+    // Visibility changes what the layout pass consumes, so geometry must rerun.
+    tree.invalidate_layout();
     tree.damage().add(bounds);
     CloverResult::Ok
 }
