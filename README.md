@@ -23,7 +23,7 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 
 ![A .cui document rendered by the framework](docs/cui.png)
 
-> Status: **0.8 — render context, grid, textured brushes**. The pipeline works end to end (tree →
+> Status: **0.9 — real text engine**. The pipeline works end to end (tree →
 > layout → display list → tile-parallel raster → frame), both authoring
 > front-ends produce the same tree, layout supports flex-style `Fill`, text
 > wraps, and keyboard focus is routed. Styles, templates, bindings and animation
@@ -41,9 +41,14 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 * **Flex layout.** `Auto` / `Px` / `Percent` / `Fill`, main-axis distribution
   with `justify`, cross-axis alignment with `align`. Explicit sizes always win
   over stretch, matching WPF.
-* **Text and images.** TrueType shaping with a glyph cache, word wrapping and
-  hard breaks for over-long words; PNG decoding; antialiased rectangles, rounded
-  rectangles and borders.
+* **Text.** rustybuzz (HarfBuzz) shaping — ligatures, kerning and marks come out
+  right — with per-character font fallback across faces, so CJK renders too.
+  `.ttc` collections are supported, which is what macOS actually ships.
+  Unicode line-break opportunities (UAX #14) drive wrapping, with hard breaks for
+  words wider than the line; glyphs rasterise from TrueType outlines through
+  `ab_glyph_rasterizer`.
+* **Images.** PNG decoding; antialiased rectangles, rounded rectangles and
+  borders.
 * **Keyboard focus.** Tab / Shift+Tab traversal over focusable nodes, and key
   events routed through capture → target → bubble along the focused node.
 * **UI documents.** One `.cui` file holds data, styles and the page:
@@ -68,9 +73,9 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 * **Stylesheets.** `<Styles>` with type, class, name and universal selectors,
   ordered by specificity. Styles provide defaults; attributes win; font size and
   text colour cascade.
-* **Data binding.** `{Binding key}` in any attribute, resolved at build time from
-  a flat key → value map. Typed values (colour, number, bool) bypass the string
-  round-trip.
+* **Data binding.** `{Binding key}` in any attribute or inline in text
+  (`"3 of {Binding total}"`), resolved at build time from a flat key → value map.
+  Typed values (colour, number, bool) bypass the string round-trip.
 * **Editable text fields.** `<TextBox>` supports focus, caret, typing,
   backspace/delete, arrows, Home/End and Enter-to-submit, and reports
   `text:<name>` / `submit:<name>` actions.

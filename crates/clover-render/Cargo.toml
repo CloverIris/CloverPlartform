@@ -8,10 +8,12 @@ repository.workspace = true
 description = "CPU rasteriser, text engine, image decoding and compositor for CloverPlatform."
 
 [dependencies]
+ab_glyph_rasterizer = "0.1.10"
 clover-core = { workspace = true }
 clover-ui = { workspace = true }
-fontdue = { workspace = true }
 png = { workspace = true }
 rayon = { workspace = true }
+rustybuzz = "0.20.1"
+unicode-linebreak = "0.1.5"
 
 [dev-dependencies]

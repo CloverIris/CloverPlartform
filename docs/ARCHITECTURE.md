@@ -77,6 +77,40 @@ That costs one extra copy of the damaged area and buys a completely safe paralle
 section. If profiling ever says the copy dominates, the fix is a
 `split_at_mut`-based stripe renderer behind the same interface.
 
+## 4b. Text
+
+Three libraries, each doing one job:
+
+| job | library |
+|---|---|
+| shaping | rustybuzz (a HarfBuzz port) |
+| line breaks | unicode-linebreak (UAX #14) |
+| outlines | ttf-parser + ab_glyph_rasterizer |
+
+Shaping per character — the previous approach — cannot produce ligatures, kerning
+or mark positioning, and it cannot render scripts that reorder glyphs. Replacing
+it was not optional.
+
+Font fallback is **per character**: text is segmented into runs by the first face
+that has a glyph for each character, and each run is shaped with its own face.
+That is what makes mixed Latin/CJK labels work, and it is why `.ttc` collections
+matter — `HelveticaNeue.ttc` and `Hiragino Sans GB.ttc` are the faces that ship
+with macOS.
+
+Faces are parsed on demand from `Arc<Vec<u8>>` rather than stored as
+self-referential structs. Parsing a face is a header scan, and both shaping and
+rasterisation already happen per run or per glyph-cache-miss, so the cost is
+noise next to shaping itself.
+
+Caret positions and wrapping both call the same shaping path, so the caret can
+never drift from the glyphs. Wrapping measures a shaped paragraph once and maps
+byte offsets to pen positions through glyph clusters, rather than re-shaping every
+candidate prefix.
+
+Known limits: no IME (typing Chinese into a text field still requires a platform
+bridge), no bidi run reordering for mixed-direction paragraphs, no variable font
+axes, no colour emoji.
+
 ## 5. Text
 
 Shaping is per line: `wrap_lines` performs greedy word wrapping at a maximum

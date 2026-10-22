@@ -115,15 +115,34 @@ impl DataContext {
         self.values.is_empty()
     }
 
-    /// Resolves `{Binding key}` to its display text, leaving other strings alone.
+    /// Resolves `{Binding key}` to its display text.
+    ///
+    /// Both whole-value bindings (`"{Binding title}"`) and inline interpolation
+    /// (`"3 of {Binding total}"`) work, so labels can mix text and data.
     pub fn resolve_text(&self, raw: &str) -> String {
-        match binding_key(raw) {
-            Some(key) => self
-                .get(key)
-                .map(Value::to_display_text)
-                .unwrap_or_default(),
-            None => raw.to_string(),
+        if !raw.contains('{') {
+            return raw.to_string();
         }
+        let mut out = String::with_capacity(raw.len());
+        let mut rest = raw;
+        while let Some(start) = rest.find('{') {
+            out.push_str(&rest[..start]);
+            let tail = &rest[start..];
+            let Some(end) = tail.find('}') else {
+                out.push_str(tail);
+                return out;
+            };
+            let token = &tail[..=end];
+            match binding_key(token) {
+                Some(key) => out.push_str(
+                    self.get(key).map(Value::to_display_text).unwrap_or_default().as_str(),
+                ),
+                None => out.push_str(token),
+            }
+            rest = &tail[end + 1..];
+        }
+        out.push_str(rest);
+        out
     }
 
     pub fn resolve_number(&self, raw: &str) -> Option<f64> {
@@ -189,6 +208,16 @@ mod tests {
         assert_eq!(ctx.resolve_text("{Binding title}"), "Hello");
         assert_eq!(ctx.resolve_text("literal"), "literal");
         assert_eq!(ctx.resolve_text("{Binding missing}"), "");
+    }
+
+    #[test]
+    fn resolves_inline_bindings_inside_a_sentence() {
+        let ctx = context();
+        assert_eq!(ctx.resolve_text("Title: {Binding title}"), "Title: Hello");
+        assert_eq!(ctx.resolve_text("{Binding title} / {Binding width}"), "Hello / 120");
+        assert_eq!(ctx.resolve_text("no bindings here"), "no bindings here");
+        assert_eq!(ctx.resolve_text("brace { not a binding }"), "brace { not a binding }");
+        assert_eq!(ctx.resolve_text("unterminated {Binding title"), "unterminated {Binding title");
     }
 
     #[test]

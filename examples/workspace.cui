@@ -38,15 +38,15 @@
 
     <StackPanel Orientation="Horizontal" Spacing="12" Padding="12" Width="Fill" Height="Fill">
       <StackPanel x:Name="panel" Width="190" Spacing="6" Height="Fill">
-        <TextBlock Text="LAYERS" Class="dim"/>
+        <TextBlock Text="图层 LAYERS" Class="dim"/>
         <ScrollViewer Height="Fill" Width="Fill">
-          <Panel Height="30" x:Name="row"><TextBlock Text="Layer 1" VerticalAlignment="Center"/></Panel>
-          <Panel Height="30" x:Name="row"><TextBlock Text="Sketch"  VerticalAlignment="Center"/></Panel>
-          <Panel Height="30" x:Name="row"><TextBlock Text="Colour"  VerticalAlignment="Center"/></Panel>
-          <Panel Height="30" x:Name="row"><TextBlock Text="Shadow"  VerticalAlignment="Center"/></Panel>
-          <Panel Height="30" x:Name="row"><TextBlock Text="Line art" VerticalAlignment="Center"/></Panel>
-          <Panel Height="30" x:Name="row"><TextBlock Text="Highlights" VerticalAlignment="Center"/></Panel>
-          <Panel Height="30" x:Name="row"><TextBlock Text="Notes" VerticalAlignment="Center"/></Panel>
+          <Panel Height="30" x:Name="row"><TextBlock Text="图层 1 · 草稿" VerticalAlignment="Center"/></Panel>
+          <Panel Height="30" x:Name="row"><TextBlock Text="素描 Sketch" VerticalAlignment="Center"/></Panel>
+          <Panel Height="30" x:Name="row"><TextBlock Text="上色 Colour" VerticalAlignment="Center"/></Panel>
+          <Panel Height="30" x:Name="row"><TextBlock Text="阴影 Shadow" VerticalAlignment="Center"/></Panel>
+          <Panel Height="30" x:Name="row"><TextBlock Text="线稿 Line art" VerticalAlignment="Center"/></Panel>
+          <Panel Height="30" x:Name="row"><TextBlock Text="高光 Highlights" VerticalAlignment="Center"/></Panel>
+          <Panel Height="30" x:Name="row"><TextBlock Text="备注 Notes" VerticalAlignment="Center"/></Panel>
         </ScrollViewer>
       </StackPanel>
 
@@ -58,7 +58,7 @@
     </StackPanel>
 
     <StackPanel x:Name="status" Orientation="Horizontal" Spacing="18">
-      <TextBlock Text="{Binding tool}"/>
+      <TextBlock Text="工具 {Binding tool}"/>
       <TextBlock Text="{Binding doc}"/>
       <TextBlock Text="{Binding zoom}"/>
     </StackPanel>

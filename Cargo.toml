@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 license = "MIT"
 authors = ["CloverIris"]
@@ -19,7 +19,6 @@ repository = "https://github.com/CloverIris/CloverPlartform"
 clover-core = { path = "crates/clover-core" }
 clover-ui = { path = "crates/clover-ui" }
 clover-render = { path = "crates/clover-render" }
-fontdue = "0.9"
 png = "0.17"
 rayon = "1.10"
 
