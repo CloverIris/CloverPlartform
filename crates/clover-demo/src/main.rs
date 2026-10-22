@@ -4,8 +4,9 @@
 //! * the toolbar is parsed from XAML,
 //! * the canvas is a direct-memory surface written by another thread.
 //!
-//! Run with `cargo run -p clover-demo`; it writes `demo.png` next to the binary
-//! and prints layout/raster statistics.
+//! The layout uses `Length::Fill` throughout, so nothing is hardcoded: the canvas
+//! region is sized by the layout pass and the direct surface is resized to match
+//! after the first frame, exactly as a real canvas widget would.
 
 use std::io::BufWriter;
 use std::sync::Arc;
@@ -15,95 +16,103 @@ use clover_core::{Color, Edges, Premul};
 use clover_render::{DirectSurface, Surface};
 use clover_ui::{node, xaml, Length, Node, SurfaceHandle};
 
+const CANVAS_NAME: &str = "canvas";
+
 fn main() {
     let started = Instant::now();
 
     // ---- 1. direct-memory canvas -------------------------------------
     // Stands in for CloverPic's paint surface: another thread owns these pixels
     // and writes them straight into memory, no UI-thread involvement.
-    // Physical resolution: the canvas widget is 600x400 logical at 2x.
     let canvas_handle = SurfaceHandle(1);
-    let canvas = DirectSurface::new(1200, 800);
+    let canvas = DirectSurface::new(16, 16);
     paint_canvas(&canvas);
 
     // ---- 2. XAML toolbar ---------------------------------------------
     let toolbar_xaml = r##"
 <StackPanel Orientation="Horizontal" Spacing="6" Padding="8" Background="#25282C">
-    <Button Content="Brush" Width="72"/>
-    <Button Content="Eraser" Width="72"/>
-    <Button Content="Select" Width="72"/>
-    <Button Content="Layers" Width="72"/>
+    <Button Content="Brush"  Width="72" x:Name="btnBrush"  Focusable="True"/>
+    <Button Content="Eraser" Width="72" x:Name="btnEraser" Focusable="True"/>
+    <Button Content="Select" Width="72" x:Name="btnSelect" Focusable="True"/>
+    <Button Content="Layers" Width="72" x:Name="btnLayers" Focusable="True"/>
 </StackPanel>"##;
     let toolbar = xaml::parse(toolbar_xaml, &xaml::NoImages).expect("toolbar xaml");
 
     // ---- 3. declarative shell ----------------------------------------
     let root = build_shell(canvas_handle, toolbar);
 
-    // ---- 4. render ----------------------------------------------------
     let width = 900.0;
     let height = 560.0;
     let scale = 2.0;
-    let mut surface = Surface::new(root, width, height, scale).expect("a system font is required for the demo");
+    let mut surface =
+        Surface::new(root, width, height, scale).expect("a system font is required for the demo");
     surface.register_direct(canvas_handle, Arc::clone(&canvas));
 
-    let layout_started = Instant::now();
+    // ---- 4. let layout size the canvas, then paint it -----------------
+    surface.invalidate_all();
+    surface.frame();
+
+    let canvas_bounds = surface
+        .tree()
+        .named(CANVAS_NAME)
+        .map(|node| node.bounds)
+        .unwrap_or_default();
+    let physical = (
+        (canvas_bounds.w * scale).round().max(1.0) as u32,
+        (canvas_bounds.h * scale).round().max(1.0) as u32,
+    );
+    canvas.resize(physical.0, physical.1);
+    paint_canvas(&canvas);
+
+    // ---- 5. final render ----------------------------------------------
+    let render_started = Instant::now();
     surface.invalidate_all();
     let frame = surface.frame();
-    let render_elapsed = layout_started.elapsed();
-
-    let stats = Stats {
-        nodes: surface.tree().root().count(),
-        canvas_px: (frame.width, frame.height),
-        tiles: surface.renderer_mut().last_tile_count(),
-        build_ms: started.elapsed().as_secs_f32() * 1000.0,
-        render_ms: render_elapsed.as_secs_f32() * 1000.0,
-    };
+    let render_elapsed = render_started.elapsed();
 
     let out = std::path::Path::new("demo.png");
     write_png(out, &surface).expect("write demo.png");
 
+    let focus_order = focus_order(&surface);
     println!("CloverPlatform demo");
-    println!("  nodes            : {}", stats.nodes);
-    println!("  frame            : {}x{} px (scale 2.0)", stats.canvas_px.0, stats.canvas_px.1);
-    println!("  raster tiles     : {}", stats.tiles);
-    println!("  build + layout   : {:.2} ms", stats.build_ms);
-    println!("  layout + raster  : {:.2} ms", stats.render_ms);
+    println!("  nodes            : {}", surface.tree().root().count());
+    println!("  frame            : {}x{} px (scale {scale})", frame.width, frame.height);
+    println!("  canvas region    : {}x{} logical -> {}x{} px", canvas_bounds.w, canvas_bounds.h, physical.0, physical.1);
+    println!("  raster tiles     : {}", surface.renderer_mut().last_tile_count());
+    println!("  build + layout   : {:.2} ms", started.elapsed().as_secs_f32() * 1000.0);
+    println!("  final render     : {:.2} ms", render_elapsed.as_secs_f32() * 1000.0);
+    println!("  focus order      : {}", focus_order.join(" -> "));
     println!("  output           : {}", out.display());
-
 }
 
-struct Stats {
-    nodes: usize,
-    canvas_px: (u32, u32),
-    tiles: usize,
-    build_ms: f32,
-    render_ms: f32,
+/// Names of the focusable nodes in tab order.
+fn focus_order(surface: &Surface) -> Vec<String> {
+    let mut ids = Vec::new();
+    surface.tree().root().collect_focusables(&mut ids);
+    ids.iter()
+        .filter_map(|id| surface.tree().node(*id))
+        .map(|node| node.name.clone().unwrap_or_else(|| format!("#{}", node.id.0)))
+        .collect()
 }
 
 /// The retained/declarative shell that hosts the XAML toolbar and the canvas.
 fn build_shell(canvas_handle: SurfaceHandle, toolbar: Node) -> Node {
-    // Header: declarative.
     let header = node::row()
         .height(Length::Px(40.0))
         .padding(Edges::new(14.0, 0.0, 14.0, 0.0))
         .align(clover_core::Align::Center)
         .background(Color::rgb(0x2A, 0x2D, 0x31))
+        .child(node::text("CloverPlatform").font_size(15.0).text_color(Color::rgb(0xE6, 0xEA, 0xEF)))
         .child(
-            node::text("CloverPlatform")
-                .font_size(15.0)
-                .text_color(Color::rgb(0xE6, 0xEA, 0xEF)),
-        )
-        .child(
-            node::text("0.1  •  XAML + declarative + direct-memory canvas")
+            node::text("0.2  •  XAML + declarative + direct-memory canvas")
                 .font_size(12.0)
                 .margin(Edges::new(14.0, 0.0, 0.0, 0.0))
                 .text_color(Color::rgb(0x8B, 0x93, 0x9D)),
         );
 
-    // Left rail: declarative.
     let rail = node::column()
         .width(Length::Px(148.0))
-        .height(Length::Px(440.0))
+        .height(Length::Fill)
         .padding(Edges::all(10.0))
         .gap(10.0)
         .background(Color::rgb(0x23, 0x26, 0x29))
@@ -112,21 +121,25 @@ fn build_shell(canvas_handle: SurfaceHandle, toolbar: Node) -> Node {
         .child(layer_row("Sketch", false))
         .child(layer_row("Colour", false))
         .child(
-            node::text("Canvas on the right is a\ndirect surface: its pixels\nare written in place by\nanother thread.")
-                .font_size(11.0)
-                .margin(Edges::new(0.0, 16.0, 0.0, 0.0))
-                .text_color(Color::rgb(0x76, 0x7E, 0x88)),
+            node::text(
+                "The canvas on the right is a direct surface. Its pixels are written in place by \
+                 another thread, and the layout pass decides how big it is.",
+            )
+            .wrap(true)
+            .font_size(11.0)
+            .margin(Edges::new(0.0, 16.0, 0.0, 0.0))
+            .text_color(Color::rgb(0x76, 0x7E, 0x88)),
         );
 
     let canvas_panel = node::panel()
-        .size(Length::Px(600.0), Length::Px(400.0))
+        .size(Length::Fill, Length::Fill)
         .margin(Edges::all(20.0))
         .background(Color::rgb(0x1A, 0x1C, 0x1F))
         .border(1.0, Color::rgb(0x3A, 0x3F, 0x46))
-        .child(node::direct_surface(canvas_handle).size(Length::Px(600.0), Length::Px(400.0)));
+        .child(node::direct_surface(canvas_handle).size(Length::Fill, Length::Fill).name(CANVAS_NAME));
 
     let body = node::row()
-        .height(Length::Px(440.0))
+        .height(Length::Fill)
         .background(Color::rgb(0x1E, 0x20, 0x23))
         .child(rail)
         .child(canvas_panel);
@@ -137,13 +150,13 @@ fn build_shell(canvas_handle: SurfaceHandle, toolbar: Node) -> Node {
         .align(clover_core::Align::Center)
         .background(Color::rgb(0x18, 0x1A, 0x1D))
         .child(
-            node::text("READY  •  brush 10 px  •  zoom 100%")
+            node::text("READY  •  brush 10 px  •  zoom 100%  •  layout is Fill-driven")
                 .font_size(11.0)
                 .text_color(Color::rgb(0x7F, 0x88, 0x92)),
         );
 
     node::column()
-        .size(Length::Px(900.0), Length::Px(506.0))
+        .size(Length::Fill, Length::Fill)
         .background(Color::rgb(0x1E, 0x20, 0x23))
         .child(header)
         .child(toolbar)
@@ -178,13 +191,16 @@ fn paint_canvas(canvas: &Arc<DirectSurface>) {
                 pixels[y * w + x] = c.0;
             }
         }
-        // A couple of brush-like strokes so the canvas is obviously live content.
+
+        // Two brush-like strokes so the canvas is obviously live content.
+        let width = w as f32;
+        let height = h as f32;
         for (index, colour) in [(0u32, Color::rgb(0x3D, 0x8B, 0xE0)), (1, Color::rgb(0xE0, 0x6A, 0x4A))] {
-            let radius = 9.0 - index as f32 * 3.0;
+            let radius = (w as f32 * 0.013).max(4.0) - index as f32 * 2.0;
             for step in 0..220 {
                 let t = step as f32 / 220.0;
-                let cx = 120.0 + t * 380.0;
-                let cy = 120.0 + (t * 6.0).sin() * 90.0 + index as f32 * 110.0;
+                let cx = width * 0.18 + t * width * 0.62;
+                let cy = height * 0.32 + (t * 6.0).sin() * height * 0.2 + index as f32 * height * 0.22;
                 stamp_circle(pixels, w, h, cx, cy, radius, colour);
             }
         }

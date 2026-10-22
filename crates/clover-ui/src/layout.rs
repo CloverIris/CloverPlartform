@@ -1,22 +1,30 @@
-//! Single-pass box layout.
+//! Single-pass box layout with main-axis flex distribution.
 //!
 //! Every node stores **absolute** bounds in surface space. That keeps hit
 //! testing, damage and the display-list builder trivial (no ancestor transform
 //! accumulation), at the cost of one extra add during arrange.
 //!
-//! The algorithm is a small flexbox: measure content, resolve explicit lengths
-//! against the parent, then distribute children along the main axis with
-//! `justify` and place them on the cross axis with `align`.
+//! The algorithm is a small flexbox:
+//!
+//! 1. measure every child against the content box,
+//! 2. give the parent's leftover main-axis space to `Length::Fill` children,
+//! 3. distribute the remaining slack with `justify`,
+//! 4. place each child on the cross axis with `align` / `Length::Fill`.
+//!
+//! Explicit sizes always win over stretch.
 
-use clover_core::{Align, Point, Rect, Size};
+use clover_core::{Align, Edges, Point, Rect, Size};
 
 use crate::node::{ImageHandle, Node, View};
 use crate::style::Length;
 
 /// Intrinsic measurements the layout engine needs but does not own.
 pub trait LayoutMetrics {
-    /// Size of a single line of text at `font_px`.
-    fn measure_text(&self, text: &str, font_px: f32) -> Size;
+    /// Size of a block of text at `font_px`.
+    ///
+    /// When `max_width` is `Some`, the text is wrapped to that width and the
+    /// returned height covers every line.
+    fn measure_text(&self, text: &str, font_px: f32, max_width: Option<f32>) -> Size;
     /// Line height for `font_px`.
     fn line_height(&self, font_px: f32) -> f32;
     /// Natural size of a registered image.
@@ -27,7 +35,7 @@ pub trait LayoutMetrics {
 pub struct EmptyMetrics;
 
 impl LayoutMetrics for EmptyMetrics {
-    fn measure_text(&self, _text: &str, _font_px: f32) -> Size {
+    fn measure_text(&self, _text: &str, _font_px: f32, _max_width: Option<f32>) -> Size {
         Size::ZERO
     }
     fn line_height(&self, font_px: f32) -> f32 {
@@ -58,23 +66,26 @@ pub fn measure(node: &Node, available: Size, metrics: &dyn LayoutMetrics) -> Siz
     let explicit_w = style.width.resolve(available.w);
     let explicit_h = style.height.resolve(available.h);
 
+    let inner_width = explicit_w
+        .map(|w| (w - padding.horizontal()).max(0.0))
+        .unwrap_or((available.w - padding.horizontal()).max(0.0));
+
     let child_available = Size::new(
-        explicit_w.map(|w| (w - padding.horizontal()).max(0.0)).unwrap_or(available.w),
+        inner_width,
         explicit_h.map(|h| (h - padding.vertical()).max(0.0)).unwrap_or(available.h),
     );
 
     let mut content = Size::ZERO;
     let horizontal = style.direction.is_horizontal();
 
-    let mut visible_children = node.children.iter().filter(|c| c.visible).peekable();
     let mut index = 0usize;
-    while let Some(child) = visible_children.next() {
+    for child in node.children.iter().filter(|c| c.visible) {
         let margin = child.style.margin;
-        let child_available = Size::new(
+        let available_for_child = Size::new(
             (child_available.w - margin.horizontal()).max(0.0),
             (child_available.h - margin.vertical()).max(0.0),
         );
-        let child_size = measure(child, child_available, metrics);
+        let child_size = measure(child, available_for_child, metrics);
         let outer_w = child_size.w + margin.horizontal();
         let outer_h = child_size.h + margin.vertical();
         let gap = if index > 0 { style.gap } else { 0.0 };
@@ -90,9 +101,11 @@ pub fn measure(node: &Node, available: Size, metrics: &dyn LayoutMetrics) -> Siz
 
     match &node.view {
         View::Text(text) => {
-            let text_size = metrics.measure_text(text, style.font_size);
-            content.w = content.w.max(text_size.w);
-            content.h = content.h.max(metrics.line_height(style.font_size));
+            let max_width = if style.wrap && inner_width > 0.0 { Some(inner_width) } else { None };
+            let text_size = metrics.measure_text(text, style.font_size, max_width);
+            let capped = if max_width.is_some() { text_size.w.min(inner_width) } else { text_size.w };
+            content.w = content.w.max(capped);
+            content.h = content.h.max(text_size.h);
         }
         View::Image { handle, .. } => {
             let natural = metrics.measure_image(*handle);
@@ -102,22 +115,15 @@ pub fn measure(node: &Node, available: Size, metrics: &dyn LayoutMetrics) -> Siz
         View::Surface { .. } | View::Empty => {}
     }
 
-    let width = explicit_w
-        .unwrap_or(content.w + padding.horizontal())
-        .max(0.0);
-    let height = explicit_h
-        .unwrap_or(content.h + padding.vertical())
-        .max(0.0);
+    let width = explicit_w.unwrap_or(content.w + padding.horizontal()).max(0.0);
+    let height = explicit_h.unwrap_or(content.h + padding.vertical()).max(0.0);
 
     Size::new(style.clamp_width(width), style.clamp_height(height))
 }
 
 fn arrange(node: &mut Node, border_box: Rect, metrics: &dyn LayoutMetrics) {
     node.bounds = border_box;
-    if !node.visible {
-        return;
-    }
-    if node.children.is_empty() {
+    if !node.visible || node.children.is_empty() {
         return;
     }
 
@@ -126,40 +132,69 @@ fn arrange(node: &mut Node, border_box: Rect, metrics: &dyn LayoutMetrics) {
     let horizontal = node.style.direction.is_horizontal();
     let gap = node.style.gap;
 
-    // Measure children against the resolved content box.
-    let measured: Vec<Size> = node
-        .children
-        .iter()
-        .map(|child| {
-            if !child.visible {
-                return Size::ZERO;
-            }
-            let margin = child.style.margin;
-            let available = Size::new(
-                (content_size.w - margin.horizontal()).max(0.0),
-                (content_size.h - margin.vertical()).max(0.0),
-            );
-            measure(child, available, metrics)
-        })
-        .collect();
-
-    // Total main-axis extent including margins and gaps.
-    let mut total_main = 0.0f32;
-    let mut visible_count = 0usize;
-    for (child, size) in node.children.iter().zip(&measured) {
+    // 1. Measure every child against the content box.
+    let mut sizes: Vec<Size> = Vec::with_capacity(node.children.len());
+    for child in &node.children {
         if !child.visible {
+            sizes.push(Size::ZERO);
             continue;
         }
         let margin = child.style.margin;
-        total_main += if horizontal { size.w + margin.horizontal() } else { size.h + margin.vertical() };
+        let available = Size::new(
+            (content_size.w - margin.horizontal()).max(0.0),
+            (content_size.h - margin.vertical()).max(0.0),
+        );
+        sizes.push(measure(child, available, metrics));
+    }
+
+    // 2. Split children into fixed and fill, then share the leftover.
+    let mut fixed_total = 0.0f32;
+    let mut fill_count = 0usize;
+    let mut visible_count = 0usize;
+    for (child, size) in node.children.iter().zip(&sizes) {
+        if !child.visible {
+            continue;
+        }
         visible_count += 1;
+        let main_margin = main_margin_of(child.style.margin, horizontal);
+        if child.style.fills_main(horizontal) {
+            fill_count += 1;
+        } else {
+            fixed_total += main_of(*size, horizontal) + main_margin;
+        }
     }
     if visible_count > 1 {
-        total_main += gap * (visible_count - 1) as f32;
+        fixed_total += gap * (visible_count - 1) as f32;
     }
 
     let main_available = if horizontal { content_size.w } else { content_size.h };
-    let slack = (main_available - total_main).max(0.0);
+    if fill_count > 0 {
+        let per_fill = ((main_available - fixed_total).max(0.0)) / fill_count as f32;
+        for (index, child) in node.children.iter().enumerate() {
+            if !child.visible || !child.style.fills_main(horizontal) {
+                continue;
+            }
+            let extent = (per_fill - main_margin_of(child.style.margin, horizontal)).max(0.0);
+            if horizontal {
+                sizes[index].w = extent;
+            } else {
+                sizes[index].h = extent;
+            }
+        }
+    }
+
+    // 3. Remaining slack goes to justify (zero once fill children took it).
+    let mut main_total = 0.0f32;
+    for (child, size) in node.children.iter().zip(&sizes) {
+        if !child.visible {
+            continue;
+        }
+        main_total += main_of(*size, horizontal) + main_margin_of(child.style.margin, horizontal);
+    }
+    if visible_count > 1 {
+        main_total += gap * (visible_count - 1) as f32;
+    }
+    let slack = (main_available - main_total).max(0.0);
     let mut cursor = match node.style.justify {
         Align::Start | Align::Stretch => 0.0,
         Align::Center => slack * 0.5,
@@ -171,25 +206,29 @@ fn arrange(node: &mut Node, border_box: Rect, metrics: &dyn LayoutMetrics) {
         0.0
     };
 
-    for (child, size) in node.children.iter_mut().zip(measured) {
+    // 4. Place children.
+    for (index, child) in node.children.iter_mut().enumerate() {
         if !child.visible {
             child.bounds = Rect::ZERO;
             continue;
         }
+        let size = sizes[index];
         let margin = child.style.margin;
         let cross_available = if horizontal { content_size.h } else { content_size.w };
         let cross_margin = if horizontal { margin.vertical() } else { margin.horizontal() };
         let cross_space = (cross_available - cross_margin).max(0.0);
 
-        // Stretch only fills the cross axis when the child did not ask for an
-        // explicit size there; an explicit Width/Height always wins, matching
-        // WPF's precedence rules.
+        // Stretch fills the cross axis when the child did not ask for an explicit
+        // size there; an explicit Width/Height always wins, matching WPF.
         let cross_is_auto = if horizontal {
             child.style.height == Length::Auto
         } else {
             child.style.width == Length::Auto
         };
-        let (child_w, child_h) = if node.style.align == Align::Stretch && cross_is_auto {
+        let stretch_cross = child.style.fills_cross(horizontal)
+            || (node.style.align == Align::Stretch && cross_is_auto);
+
+        let (child_w, child_h) = if stretch_cross {
             if horizontal {
                 (size.w, cross_space)
             } else {
@@ -200,27 +239,39 @@ fn arrange(node: &mut Node, border_box: Rect, metrics: &dyn LayoutMetrics) {
         };
 
         let cross_extent = if horizontal { child_h + cross_margin } else { child_w + cross_margin };
-        let cross_offset = node.style.align.offset(cross_available, cross_extent);
+        let cross_offset = if stretch_cross {
+            0.0
+        } else {
+            node.style.align.offset(cross_available, cross_extent)
+        };
 
         let (x, y) = if horizontal {
-            (
-                content_box.x + cursor + margin.left,
-                content_box.y + cross_offset + margin.top,
-            )
+            (content_box.x + cursor + margin.left, content_box.y + cross_offset + margin.top)
         } else {
-            (
-                content_box.x + cross_offset + margin.left,
-                content_box.y + cursor + margin.top,
-            )
+            (content_box.x + cross_offset + margin.left, content_box.y + cursor + margin.top)
         };
 
-        let child_rect = Rect::new(x, y, child_w, child_h);
-        arrange(child, child_rect, metrics);
-        cursor += if horizontal {
-            child_w + margin.horizontal() + gap + gap_extra
-        } else {
-            child_h + margin.vertical() + gap + gap_extra
-        };
+        arrange(child, Rect::new(x, y, child_w, child_h), metrics);
+        cursor += main_of(Size::new(child_w, child_h), horizontal)
+            + main_margin_of(margin, horizontal)
+            + gap
+            + gap_extra;
+    }
+}
+
+fn main_of(size: Size, horizontal: bool) -> f32 {
+    if horizontal {
+        size.w
+    } else {
+        size.h
+    }
+}
+
+fn main_margin_of(margin: Edges, horizontal: bool) -> f32 {
+    if horizontal {
+        margin.horizontal()
+    } else {
+        margin.vertical()
     }
 }
 
@@ -242,7 +293,7 @@ pub fn hit_test<'a>(node: &'a Node, point: Point) -> Option<&'a Node> {
     Some(node)
 }
 
-/// Keeps `Length` in scope for downstream users of this module.
+/// Resolves a length against an available extent.
 pub fn resolve(length: Length, available: f32) -> Option<f32> {
     length.resolve(available)
 }
@@ -251,7 +302,6 @@ pub fn resolve(length: Length, available: f32) -> Option<f32> {
 mod tests {
     use super::*;
     use crate::node;
-    use clover_core::{Edges, Orientation};
 
     fn size(w: f32, h: f32) -> Size {
         Size::new(w, h)
@@ -310,8 +360,7 @@ mod tests {
 
     #[test]
     fn percent_length_resolves_against_parent() {
-        let mut root = node::column()
-            .child(node::panel().size(Length::Percent(0.5), Length::Px(10.0)));
+        let mut root = node::column().child(node::panel().size(Length::Percent(0.5), Length::Px(10.0)));
         layout(&mut root, size(200.0, 100.0), &EmptyMetrics);
         assert_eq!(root.children[0].bounds.w, 100.0);
     }
@@ -351,8 +400,96 @@ mod tests {
     }
 
     #[test]
-    fn main_axis_direction_is_honoured() {
-        assert!(Orientation::Horizontal.is_horizontal());
-        assert!(!Orientation::Vertical.is_horizontal());
+    fn vertical_and_horizontal_are_distinct() {
+        assert!(clover_core::Orientation::Horizontal.is_horizontal());
+        assert!(!clover_core::Orientation::Vertical.is_horizontal());
+    }
+
+    // ---- fill ----------------------------------------------------------
+
+    #[test]
+    fn fill_child_absorbs_leftover_height() {
+        let mut root = node::column()
+            .child(node::panel().size(Length::Auto, Length::Px(30.0)))
+            .child(node::panel().size(Length::Auto, Length::Fill));
+        layout(&mut root, size(100.0, 100.0), &EmptyMetrics);
+        assert_eq!(root.children[0].bounds.h, 30.0);
+        assert_eq!(root.children[1].bounds.h, 70.0, "leftover height goes to the fill child");
+        assert_eq!(root.children[1].bounds.y, 30.0);
+    }
+
+    #[test]
+    fn fill_children_share_leftover_equally() {
+        let mut root = node::row()
+            .child(node::panel().size(Length::Px(20.0), Length::Auto))
+            .child(node::panel().size(Length::Fill, Length::Auto))
+            .child(node::panel().size(Length::Fill, Length::Auto));
+        layout(&mut root, size(100.0, 40.0), &EmptyMetrics);
+        assert_eq!(root.children[0].bounds.w, 20.0);
+        assert_eq!(root.children[1].bounds.w, 40.0);
+        assert_eq!(root.children[2].bounds.w, 40.0);
+        assert_eq!(root.children[2].bounds.x, 60.0);
+    }
+
+    #[test]
+    fn fill_respects_gaps_and_margins() {
+        let mut root = node::row()
+            .gap(10.0)
+            .child(node::panel().size(Length::Px(10.0), Length::Auto))
+            .child(
+                node::panel()
+                    .size(Length::Fill, Length::Auto)
+                    .margin(Edges::new(5.0, 0.0, 5.0, 0.0)),
+            );
+        layout(&mut root, size(100.0, 40.0), &EmptyMetrics);
+        // 100 - 10 (fixed) - 10 (gap) = 80 leftover, minus 10 margin = 70.
+        assert_eq!(root.children[1].bounds.w, 70.0);
+        // 10 (fixed) + 10 (gap) puts the slot at 20; the left margin offsets the
+        // child inside its slot, so it starts at 25 and ends at 95.
+        assert_eq!(root.children[1].bounds.x, 25.0);
+        assert_eq!(root.children[1].bounds.right(), 95.0);
+    }
+
+    #[test]
+    fn fill_on_cross_axis_stretches() {
+        let mut root = node::column().child(node::panel().size(Length::Fill, Length::Px(10.0)));
+        layout(&mut root, size(80.0, 100.0), &EmptyMetrics);
+        assert_eq!(root.children[0].bounds.w, 80.0);
+    }
+
+    #[test]
+    fn explicit_size_beats_fill_sibling_distribution() {
+        let mut root = node::row()
+            .child(node::panel().size(Length::Px(60.0), Length::Auto))
+            .child(node::panel().size(Length::Fill, Length::Auto))
+            .child(node::panel().size(Length::Px(60.0), Length::Auto));
+        layout(&mut root, size(100.0, 40.0), &EmptyMetrics);
+        assert_eq!(root.children[0].bounds.w, 60.0);
+        assert_eq!(root.children[1].bounds.w, 0.0, "over-subscribed: fill gets nothing");
+        assert_eq!(root.children[2].bounds.w, 60.0);
+    }
+
+    #[test]
+    fn nested_fill_propagates_through_containers() {
+        let mut root = node::column()
+            .child(
+                node::row()
+                    .size(Length::Auto, Length::Fill)
+                    .child(node::panel().size(Length::Fill, Length::Auto)),
+            )
+            .child(node::panel().size(Length::Auto, Length::Px(20.0)));
+        layout(&mut root, size(100.0, 100.0), &EmptyMetrics);
+        let row = &root.children[0];
+        assert_eq!(row.bounds.h, 80.0);
+        assert_eq!(row.children[0].bounds.w, 100.0, "inner fill spans the row");
+    }
+
+    #[test]
+    fn justify_still_works_without_fill() {
+        let mut root = node::column()
+            .justify(Align::End)
+            .child(node::panel().size(Length::Px(10.0), Length::Px(10.0)));
+        layout(&mut root, size(100.0, 100.0), &EmptyMetrics);
+        assert_eq!(root.children[0].bounds.y, 90.0);
     }
 }

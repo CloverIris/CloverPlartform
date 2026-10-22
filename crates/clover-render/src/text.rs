@@ -133,22 +133,89 @@ impl TextEngine {
         bitmap
     }
 
-    /// Measures a block of text. `\n` starts a new line.
-    pub fn measure(&self, text: &str, px: f32) -> Size {
+    /// Advance width of a single character.
+    pub fn char_advance(&self, ch: char, px: f32) -> f32 {
+        self.glyph(ch, px).advance
+    }
+
+    /// Width of one line, without any wrapping.
+    pub fn line_width(&self, line: &str, px: f32) -> f32 {
+        line.chars().map(|ch| self.glyph(ch, px).advance).sum()
+    }
+
+    /// Breaks `text` into lines.
+    ///
+    /// `\n` always starts a new line. When `max_width` is `Some`, lines are
+    /// additionally word-wrapped to that width; words longer than the width are
+    /// hard-broken so nothing can overflow indefinitely.
+    pub fn wrap_lines(&self, text: &str, px: f32, max_width: Option<f32>) -> Vec<String> {
+        let Some(limit) = max_width.filter(|l| *l > 0.0) else {
+            return text.split('\n').map(str::to_string).collect();
+        };
+        let mut out = Vec::new();
+        for paragraph in text.split('\n') {
+            if paragraph.trim().is_empty() {
+                out.push(String::new());
+                continue;
+            }
+            self.wrap_paragraph(paragraph, px, limit, &mut out);
+        }
+        if out.is_empty() {
+            out.push(String::new());
+        }
+        out
+    }
+
+    fn wrap_paragraph(&self, paragraph: &str, px: f32, limit: f32, out: &mut Vec<String>) {
+        let space_w = self.char_advance(' ', px);
+        let mut line = String::new();
+        let mut line_w = 0.0f32;
+
+        for word in paragraph.split_whitespace() {
+            let word_w = self.line_width(word, px);
+
+            // Start a new line when the word does not fit.
+            if !line.is_empty() && line_w + space_w + word_w > limit {
+                out.push(std::mem::take(&mut line));
+                line_w = 0.0;
+            }
+
+            // A word wider than the whole line is broken mid-word.
+            if line.is_empty() && word_w > limit {
+                let mut chunk = String::new();
+                let mut chunk_w = 0.0f32;
+                for ch in word.chars() {
+                    let advance = self.char_advance(ch, px);
+                    if chunk_w + advance > limit && !chunk.is_empty() {
+                        out.push(std::mem::take(&mut chunk));
+                        chunk_w = 0.0;
+                    }
+                    chunk.push(ch);
+                    chunk_w += advance;
+                }
+                line = chunk;
+                line_w = chunk_w;
+                continue;
+            }
+
+            if !line.is_empty() {
+                line.push(' ');
+                line_w += space_w;
+            }
+            line.push_str(word);
+            line_w += word_w;
+        }
+        out.push(line);
+    }
+
+    /// Measures a block of text, wrapping to `max_width` when given.
+    pub fn measure(&self, text: &str, px: f32, max_width: Option<f32>) -> Size {
         if text.is_empty() {
             return Size::ZERO;
         }
-        let mut widest = 0.0f32;
-        let mut lines = 0usize;
-        for line in text.split('\n') {
-            lines += 1;
-            let mut width = 0.0f32;
-            for ch in line.chars() {
-                width += self.glyph(ch, px).advance;
-            }
-            widest = widest.max(width);
-        }
-        Size::new(widest, self.line_height(px) * lines as f32)
+        let lines = self.wrap_lines(text, px, max_width);
+        let widest = lines.iter().map(|l| self.line_width(l, px)).fold(0.0f32, f32::max);
+        Size::new(widest, self.line_height(px) * lines.len() as f32)
     }
 
     /// Shapes `text` with its baseline at `baseline`, starting at `origin_x`.
@@ -185,7 +252,7 @@ mod tests {
             eprintln!("no system font available, skipping");
             return;
         };
-        let size = engine.measure("Hello", 16.0);
+        let size = engine.measure("Hello", 16.0, None);
         assert!(size.w > 0.0);
         assert!(size.h >= 16.0);
     }
@@ -193,7 +260,7 @@ mod tests {
     #[test]
     fn empty_text_measures_zero() {
         let Some(engine) = engine() else { return };
-        assert_eq!(engine.measure("", 16.0), Size::ZERO);
+        assert_eq!(engine.measure("", 16.0, None), Size::ZERO);
     }
 
     #[test]
@@ -210,6 +277,41 @@ mod tests {
         let a = engine.glyph('A', 20.0);
         let b = engine.glyph('A', 20.0);
         assert!(Arc::ptr_eq(&a, &b), "same glyph must hit the cache");
+    }
+
+    #[test]
+    fn explicit_newlines_add_lines() {
+        let Some(engine) = engine() else { return };
+        let single = engine.measure("one", 16.0, None);
+        let triple = engine.measure("one\ntwo\nthree", 16.0, None);
+        assert!((triple.h - single.h * 3.0).abs() < 0.01, "three lines tall");
+    }
+
+    #[test]
+    fn wrapping_splits_on_spaces() {
+        let Some(engine) = engine() else { return };
+        let text = "the quick brown fox jumps over the lazy dog";
+        let unwrapped = engine.measure(text, 16.0, None);
+        let wrapped = engine.measure(text, 16.0, Some(unwrapped.w / 3.0));
+        assert!(wrapped.h > unwrapped.h, "wrapped text needs more lines");
+        assert!(wrapped.w <= unwrapped.w / 3.0 + 1.0, "no line exceeds the limit");
+    }
+
+    #[test]
+    fn long_words_are_hard_broken() {
+        let Some(engine) = engine() else { return };
+        let lines = engine.wrap_lines("supercalifragilisticexpialidocious", 16.0, Some(40.0));
+        assert!(lines.len() > 1, "an oversized word must break, got {lines:?}");
+        for line in &lines {
+            assert!(engine.line_width(line, 16.0) <= 41.0, "line '{line}' overflowed");
+        }
+    }
+
+    #[test]
+    fn wrapping_keeps_explicit_lines() {
+        let Some(engine) = engine() else { return };
+        let lines = engine.wrap_lines("a\nb", 16.0, Some(500.0));
+        assert_eq!(lines, vec!["a".to_string(), "b".to_string()]);
     }
 
     #[test]

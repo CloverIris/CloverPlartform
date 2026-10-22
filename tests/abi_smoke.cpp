@@ -29,6 +29,8 @@ int main() {
         "<StackPanel Background=\"#202225\" Padding=\"8\" Spacing=\"6\">"
         "  <TextBlock Text=\"ABI smoke\" FontSize=\"18\"/>"
         "  <CloverSurface Id=\"1\" Width=\"120\" Height=\"90\"/>"
+        "  <Panel Width=\"120\" Height=\"20\" x:Name=\"first\" Focusable=\"True\"/>"
+        "  <Panel Width=\"120\" Height=\"20\" x:Name=\"second\" Focusable=\"True\"/>"
         "</StackPanel>";
 
     // 1. Surface from XAML.
@@ -87,6 +89,25 @@ int main() {
     const uint64_t hit = clover_surface_pointer(surface, 60.0f, 90.0f, CLOVER_POINTER_DOWN, 1,
                                                 CLOVER_MODIFIER_CONTROL);
     std::printf("INFO hit node id: %llu\n", static_cast<unsigned long long>(hit));
+
+    // 5. Keyboard focus.
+    check(clover_surface_focus(surface) == 0, "nothing is focused initially");
+    const uint64_t first_focus = clover_surface_focus_next(surface, false);
+    check(first_focus != 0, "focus_next finds a focusable node");
+    const uint64_t second_focus = clover_surface_focus_next(surface, false);
+    check(second_focus != 0 && second_focus != first_focus, "focus_next advances");
+    check(clover_surface_focus(surface) == second_focus, "focus is observable");
+    const uint64_t wrapped = clover_surface_focus_next(surface, false);
+    check(wrapped == first_focus, "focus wraps around");
+
+    // Tab routed through the C ABI also moves focus.
+    const uint64_t after_tab = clover_surface_key(surface, 0x09, CLOVER_KEY_DOWN, 0, false);
+    check(after_tab != 0 && after_tab != first_focus, "Tab key moves focus through the ABI");
+
+    // Shift+Tab walks backwards.
+    const uint64_t after_shift_tab =
+        clover_surface_key(surface, 0x09, CLOVER_KEY_DOWN, CLOVER_MODIFIER_SHIFT, false);
+    check(after_shift_tab == first_focus, "Shift+Tab walks back");
 
     // A second frame must advance the generation counter.
     const uint64_t first = frame.generation;

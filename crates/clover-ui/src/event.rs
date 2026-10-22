@@ -134,11 +134,12 @@ pub struct RouteEntry {
 /// Pointer and wheel events target the deepest hit node; key events target the
 /// focused node. The chain is ordered capture (root → target), target, then
 /// bubble (target → root).
-pub fn route(tree: &crate::node::UiTree, event: &UiEvent, focused: Option<NodeId>) -> Vec<RouteEntry> {
+pub fn route(tree: &crate::node::UiTree, event: &UiEvent) -> Vec<RouteEntry> {
     let chain: Vec<NodeId> = match event {
         UiEvent::Pointer(p) => tree.hit_chain(p.position),
         UiEvent::Wheel(w) => tree.hit_chain(w.position),
-        UiEvent::Key(_) => match focused {
+        // Key events follow keyboard focus, not the pointer.
+        UiEvent::Key(_) => match tree.focus() {
             Some(id) => ancestor_chain(tree, id),
             None => Vec::new(),
         },
@@ -215,7 +216,7 @@ mod tests {
     fn pointer_route_bubbles_to_root() {
         let tree = sample_tree();
         let event = UiEvent::Pointer(PointerEvent { position: Point::new(20.0, 20.0), ..Default::default() });
-        let route = route(&tree, &event, None);
+        let route = route(&tree, &event);
         assert_eq!(route.first().unwrap().phase, EventPhase::Capture);
         assert!(route.iter().any(|e| e.phase == EventPhase::Target));
         assert_eq!(route.last().unwrap().phase, EventPhase::Bubble);
@@ -227,10 +228,77 @@ mod tests {
     fn target_is_deepest_hit_node() {
         let tree = sample_tree();
         let event = UiEvent::Pointer(PointerEvent { position: Point::new(20.0, 20.0), ..Default::default() });
-        let route = route(&tree, &event, None);
+        let route = route(&tree, &event);
         let target = route.iter().find(|e| e.phase == EventPhase::Target).unwrap();
         let inner = tree.node(target.node).unwrap();
         assert_eq!(inner.name.as_deref(), Some("inner"));
+    }
+
+    #[test]
+    fn key_events_target_the_focused_node() {
+        let mut tree = sample_tree();
+        let inner = tree.root().children[0].id;
+        tree.set_focus(Some(inner));
+        let event = UiEvent::Key(KeyEvent {
+            action: KeyAction::Down,
+            key: 0x09,
+            modifiers: Modifiers::NONE,
+            repeat: false,
+        });
+        let route = route(&tree, &event);
+        let target = route.iter().find(|e| e.phase == EventPhase::Target).unwrap();
+        assert_eq!(target.node, inner);
+        assert_eq!(route.len(), 3, "capture root, target inner, bubble root");
+    }
+
+    #[test]
+    fn key_events_without_focus_route_nowhere() {
+        let tree = sample_tree();
+        let event = UiEvent::Key(KeyEvent {
+            action: KeyAction::Down,
+            key: 0x41,
+            modifiers: Modifiers::NONE,
+            repeat: false,
+        });
+        assert!(route(&tree, &event).is_empty());
+    }
+
+    #[test]
+    fn focus_cycles_through_focusable_nodes() {
+        let mut tree = crate::node::UiTree::new(
+            node::row()
+                .child(node::panel().name("a").focusable(true))
+                .child(node::panel().name("b"))
+                .child(node::panel().name("c").focusable(true)),
+        );
+        tree.resize(Size::new(100.0, 20.0), 1.0);
+        tree.layout(&EmptyMetrics);
+
+        assert!(tree.focus_next(false));
+        let first = tree.focus().unwrap();
+        assert_eq!(tree.node(first).unwrap().name.as_deref(), Some("a"));
+        assert!(tree.node(first).unwrap().state.focused);
+
+        tree.focus_next(false);
+        let second = tree.focus().unwrap();
+        assert_eq!(tree.node(second).unwrap().name.as_deref(), Some("c"));
+
+        tree.focus_next(false);
+        assert_eq!(tree.focus().unwrap(), first, "wraps to the start");
+
+        tree.focus_next(true);
+        assert_eq!(tree.focus().unwrap(), second, "reverse wraps backwards");
+    }
+
+    #[test]
+    fn clearing_focus_updates_state() {
+        let mut tree = sample_tree();
+        let inner = tree.root().children[0].id;
+        tree.set_focus(Some(inner));
+        assert!(tree.node(inner).unwrap().state.focused);
+        tree.set_focus(None);
+        assert!(tree.focus().is_none());
+        assert!(!tree.node(inner).unwrap().state.focused);
     }
 
     #[test]

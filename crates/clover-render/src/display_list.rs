@@ -132,14 +132,20 @@ fn walk(
                 let content_box = node.style.padding.deflate(node.bounds).scale(scale);
                 let font_px = (node.style.font_size * scale).max(1.0);
                 let line_height = text.line_height(font_px);
-                let block = text.measure(content, font_px);
-                let top = content_box.y + ((content_box.h - block.h) * 0.5).max(0.0);
+                let max_width = if node.style.wrap && content_box.w > 0.0 {
+                    Some(content_box.w)
+                } else {
+                    None
+                };
+                let lines = text.wrap_lines(content, font_px, max_width);
+                let block_height = line_height * lines.len() as f32;
+                let top = content_box.y + ((content_box.h - block_height) * 0.5).max(0.0);
                 let ascent = text.ascent(font_px);
-                for (index, line) in content.split('\n').enumerate() {
+                for (index, line) in lines.iter().enumerate() {
                     if line.is_empty() {
                         continue;
                     }
-                    let line_width = text.measure(line, font_px).w;
+                    let line_width = text.line_width(line, font_px);
                     let x = content_box.x + node.style.text_align.offset(content_box.w, line_width);
                     let baseline = top + line_height * index as f32 + ascent;
                     let run = text.shape(line, font_px, x, baseline);

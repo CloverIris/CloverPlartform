@@ -77,6 +77,8 @@ pub struct Node {
     pub bounds: Rect,
     pub state: NodeState,
     pub visible: bool,
+    /// Participates in Tab traversal and can receive key events.
+    pub focusable: bool,
 }
 
 impl Default for Node {
@@ -92,6 +94,7 @@ impl Default for Node {
             bounds: Rect::ZERO,
             state: NodeState::default(),
             visible: true,
+            focusable: false,
         }
     }
 }
@@ -237,6 +240,17 @@ impl Node {
         self
     }
 
+    pub fn focusable(mut self, focusable: bool) -> Self {
+        self.focusable = focusable;
+        self
+    }
+
+    /// Word-wraps text to the node's content width.
+    pub fn wrap(mut self, wrap: bool) -> Self {
+        self.style.wrap = wrap;
+        self
+    }
+
     // ---- queries -------------------------------------------------------
 
     /// Depth-first search by id.
@@ -295,6 +309,19 @@ impl Node {
         visit(self);
         for child in &self.children {
             child.walk(visit);
+        }
+    }
+
+    /// Collects focusable, visible nodes in depth-first (tab) order.
+    pub fn collect_focusables(&self, out: &mut Vec<NodeId>) {
+        if !self.visible {
+            return;
+        }
+        if self.focusable {
+            out.push(self.id);
+        }
+        for child in &self.children {
+            child.collect_focusables(out);
         }
     }
 
@@ -415,6 +442,7 @@ pub struct UiTree {
     mounts: HashMap<NodeId, MountBuilder>,
     invalidated: Vec<NodeId>,
     damage: clover_core::Damage,
+    focus: Option<NodeId>,
 }
 
 impl UiTree {
@@ -426,6 +454,7 @@ impl UiTree {
             mounts: HashMap::new(),
             invalidated: Vec::new(),
             damage: clover_core::Damage::new(),
+            focus: None,
         }
     }
 
@@ -531,6 +560,64 @@ impl UiTree {
             self.damage.mark_full();
         }
         changed
+    }
+
+    /// The node that currently owns keyboard input.
+    pub fn focus(&self) -> Option<NodeId> {
+        self.focus
+    }
+
+    /// Moves focus to `id` (or clears it). Returns whether anything changed.
+    pub fn set_focus(&mut self, id: Option<NodeId>) -> bool {
+        if self.focus == id {
+            return false;
+        }
+        let mut damage_old = Rect::ZERO;
+        if let Some(previous) = self.focus {
+            if let Some(node) = self.root.find_mut(previous) {
+                node.state.focused = false;
+                damage_old = node.bounds;
+            }
+        }
+        self.focus = None;
+        if !damage_old.is_empty() {
+            self.damage.add(damage_old);
+        }
+
+        if let Some(next) = id {
+            let mut damage_new = Rect::ZERO;
+            let found = if let Some(node) = self.root.find_mut(next) {
+                node.state.focused = true;
+                damage_new = node.bounds;
+                true
+            } else {
+                false
+            };
+            if !damage_new.is_empty() {
+                self.damage.add(damage_new);
+            }
+            if found {
+                self.focus = Some(next);
+            }
+        }
+        true
+    }
+
+    /// Moves focus to the next (or previous) focusable node, wrapping around.
+    pub fn focus_next(&mut self, reverse: bool) -> bool {
+        let mut order = Vec::new();
+        self.root.collect_focusables(&mut order);
+        if order.is_empty() {
+            return self.set_focus(None);
+        }
+        let current = self.focus.and_then(|id| order.iter().position(|candidate| *candidate == id));
+        let index = match current {
+            None if reverse => order.len() - 1,
+            None => 0,
+            Some(index) if reverse => (index + order.len() - 1) % order.len(),
+            Some(index) => (index + 1) % order.len(),
+        };
+        self.set_focus(Some(order[index]))
     }
 
     /// Runs the layout pass for the current viewport.

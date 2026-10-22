@@ -6,7 +6,7 @@
 //! the UI (CloverPic's canvas) without going through the UI thread.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use clover_core::{Damage, Point, Premul, Rect, Size};
@@ -35,8 +35,8 @@ pub struct FrameDescriptor {
 /// new canvas image never copies the pixels — only the lock is taken. Upgrading
 /// this to a lock-free triple buffer is a local change; the API stays the same.
 pub struct DirectSurface {
-    width: u32,
-    height: u32,
+    width: AtomicU32,
+    height: AtomicU32,
     front: Mutex<Buffers>,
     version: AtomicU64,
 }
@@ -50,19 +50,19 @@ impl DirectSurface {
     pub fn new(width: u32, height: u32) -> Arc<Self> {
         let pixels = vec![0u32; (width.max(1) as usize) * (height.max(1) as usize)];
         Arc::new(Self {
-            width: width.max(1),
-            height: height.max(1),
+            width: AtomicU32::new(width.max(1)),
+            height: AtomicU32::new(height.max(1)),
             front: Mutex::new(Buffers { front: pixels.clone(), back: pixels }),
             version: AtomicU64::new(1),
         })
     }
 
     pub fn width(&self) -> u32 {
-        self.width
+        self.width.load(Ordering::Acquire)
     }
 
     pub fn height(&self) -> u32 {
-        self.height
+        self.height.load(Ordering::Acquire)
     }
 
     pub fn version(&self) -> u64 {
@@ -70,18 +70,23 @@ impl DirectSurface {
     }
 
     /// Resizes both buffers, clearing them.
-    pub fn resize(&mut self, width: u32, height: u32) {
+    ///
+    /// Takes `&self` so a canvas thread can react to a resize while the UI
+    /// thread holds its own handle to the same surface.
+    pub fn resize(&self, width: u32, height: u32) {
         let width = width.max(1);
         let height = height.max(1);
-        if self.width == width && self.height == height {
+        if self.width() == width && self.height() == height {
             return;
         }
-        self.width = width;
-        self.height = height;
         let len = (width as usize) * (height as usize);
-        let mut buffers = self.front.lock().unwrap_or_else(|e| e.into_inner());
-        buffers.front = vec![0; len];
-        buffers.back = vec![0; len];
+        {
+            let mut buffers = self.front.lock().unwrap_or_else(|e| e.into_inner());
+            buffers.front = vec![0; len];
+            buffers.back = vec![0; len];
+        }
+        self.width.store(width, Ordering::Release);
+        self.height.store(height, Ordering::Release);
         self.version.fetch_add(1, Ordering::Release);
     }
 
@@ -95,7 +100,7 @@ impl DirectSurface {
         {
             let mut guard = self.front.lock().unwrap_or_else(|e| e.into_inner());
             let Buffers { front, back } = &mut *guard;
-            f(back, self.width, self.height);
+            f(back, self.width(), self.height());
             std::mem::swap(front, back);
         }
         self.version.fetch_add(1, Ordering::Release);
@@ -116,7 +121,7 @@ impl DirectSurface {
         {
             let mut guard = self.front.lock().unwrap_or_else(|e| e.into_inner());
             let Buffers { front, back } = &mut *guard;
-            let expected = (self.width as usize) * (self.height as usize);
+            let expected = (self.width() as usize) * (self.height() as usize);
             if buffer.len() == expected {
                 // Old front becomes the next back buffer: no allocation, no copy.
                 *back = std::mem::replace(front, buffer);
@@ -130,7 +135,7 @@ impl DirectSurface {
     /// Reads the front buffer.
     pub fn read<R>(&self, f: impl FnOnce(&[u32], u32, u32) -> R) -> R {
         let buffers = self.front.lock().unwrap_or_else(|e| e.into_inner());
-        f(&buffers.front, self.width, self.height)
+        f(&buffers.front, self.width(), self.height())
     }
 
     /// Raw front-buffer pointer, for native hosts.
@@ -141,7 +146,7 @@ impl DirectSurface {
     /// this path are expected to hold the write lock at the platform level.
     pub unsafe fn raw_front(&self) -> (*const u32, usize) {
         let buffers = self.front.lock().unwrap_or_else(|e| e.into_inner());
-        (buffers.front.as_ptr(), self.width as usize)
+        (buffers.front.as_ptr(), self.width() as usize)
     }
 }
 
@@ -280,6 +285,14 @@ impl Surface {
             UiEvent::Pointer(p) => {
                 self.tree.update_hover(Some(p.position));
                 if p.action == clover_ui::PointerAction::Down {
+                    // Focus the innermost focusable ancestor of the hit node.
+                    let chain = self.tree.hit_chain(p.position);
+                    let focus_target = chain
+                        .iter()
+                        .copied()
+                        .find(|id| self.tree.node(*id).map(|n| n.focusable).unwrap_or(false));
+                    self.tree.set_focus(focus_target);
+
                     let id = self.hit_node(p.position);
                     let bounds = self.hit_bounds(p.position);
                     if let Some(node) = self.tree.node_mut(id) {
@@ -289,9 +302,14 @@ impl Surface {
                 }
             }
             UiEvent::Wheel(_) => {}
-            UiEvent::Key(_) => {}
+            UiEvent::Key(k) => {
+                // Tab / Shift+Tab move keyboard focus before routing.
+                if k.action == clover_ui::KeyAction::Down && k.key == 0x09 && !k.repeat {
+                    self.tree.focus_next(k.modifiers.shift());
+                }
+            }
         }
-        clover_ui::event::route(&self.tree, &event, None)
+        clover_ui::event::route(&self.tree, &event)
     }
 
     fn hit_node(&self, point: Point) -> NodeId {

@@ -47,6 +47,14 @@ pub enum CloverPointerAction {
     Cancel = 3,
 }
 
+/// Key actions, matching `clover_ui::KeyAction`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub enum CloverKeyAction {
+    Down = 0,
+    Up = 1,
+}
+
 /// An opaque surface handle.
 pub struct CloverSurface {
     surface: Surface,
@@ -186,6 +194,55 @@ pub unsafe extern "C" fn clover_surface_pointer(
         .find(|entry| entry.phase == clover_ui::EventPhase::Target)
         .map(|entry| entry.node.0)
         .unwrap_or(0)
+}
+
+/// Pushes a key event. Tab and Shift+Tab move focus before the event is routed.
+///
+/// Returns the id of the focused node after routing, or 0 when nothing has focus.
+///
+/// # Safety
+/// `surface` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_key(
+    surface: *mut CloverSurface,
+    key: u32,
+    action: CloverKeyAction,
+    modifiers: u32,
+    repeat: bool,
+) -> u64 {
+    let Some(surface) = surface.as_mut() else { return 0 };
+    let event = clover_ui::KeyEvent {
+        action: match action {
+            CloverKeyAction::Down => clover_ui::KeyAction::Down,
+            CloverKeyAction::Up => clover_ui::KeyAction::Up,
+        },
+        key,
+        modifiers: clover_ui::Modifiers(modifiers),
+        repeat,
+    };
+    surface.surface.dispatch(clover_ui::UiEvent::Key(event));
+    surface.surface.tree().focus().map(|id| id.0).unwrap_or(0)
+}
+
+/// Returns the id of the focused node, or 0.
+///
+/// # Safety
+/// `surface` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_focus(surface: *mut CloverSurface) -> u64 {
+    let Some(surface) = surface.as_mut() else { return 0 };
+    surface.surface.tree().focus().map(|id| id.0).unwrap_or(0)
+}
+
+/// Moves focus to the next (or previous) focusable node and returns its id.
+///
+/// # Safety
+/// `surface` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_focus_next(surface: *mut CloverSurface, reverse: bool) -> u64 {
+    let Some(surface) = surface.as_mut() else { return 0 };
+    surface.surface.tree_mut().focus_next(reverse);
+    surface.surface.tree().focus().map(|id| id.0).unwrap_or(0)
 }
 
 /// Registers a direct-memory child surface and returns its handle.

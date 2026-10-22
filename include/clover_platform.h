@@ -42,6 +42,12 @@ typedef enum clover_result {
     CLOVER_UNKNOWN_HANDLE = 4
 } clover_result;
 
+/* Key actions. */
+typedef enum clover_key_action {
+    CLOVER_KEY_DOWN = 0,
+    CLOVER_KEY_UP = 1
+} clover_key_action;
+
 /* Pointer actions. */
 typedef enum clover_pointer_action {
     CLOVER_POINTER_MOVE = 0,
@@ -112,6 +118,23 @@ clover_result clover_surface_stats(clover_surface *surface, clover_stats *out);
 uint64_t clover_surface_pointer(clover_surface *surface, float x, float y,
                                 clover_pointer_action action, uint32_t button,
                                 uint32_t modifiers);
+
+/*
+ * Keyboard and focus
+ * ------------------
+ * Tab / Shift+Tab move focus before the event is routed. Key events then route
+ * capture -> target -> bubble along the focused node's ancestors.
+ */
+
+/* Returns the focused node id after routing, or 0. */
+uint64_t clover_surface_key(clover_surface *surface, uint32_t key, clover_key_action action,
+                            uint32_t modifiers, bool repeat);
+
+/* Returns the focused node id, or 0. */
+uint64_t clover_surface_focus(clover_surface *surface);
+
+/* Moves focus forward (or backward) and returns the new focused node id. */
+uint64_t clover_surface_focus_next(clover_surface *surface, bool reverse);
 
 /*
  * Direct-memory regions

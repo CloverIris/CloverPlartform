@@ -34,7 +34,24 @@ Every node stores its bounds in surface space, not parent-relative.
   everything else.
 
 Transforms exist (`clover_core::Transform`) for scrolled/zoomed subtrees, but the
-v0.1 layout path does not emit them yet.
+current layout path does not emit them yet.
+
+### Flex distribution
+
+`Length::Fill` cannot be resolved during measure: it depends on what the siblings
+need. Arrange therefore runs in two steps — measure everything, subtract the
+fixed children (plus gaps) from the main axis, then split the remainder between
+the `Fill` children.
+
+Two consequences worth keeping in mind:
+
+* Over-subscribed rows give `Fill` children zero width rather than negative.
+* `Fill` on the cross axis is treated as stretch, so `Width::Fill` inside a
+  column makes a full-width row and `Height::Fill` inside a row makes a
+  full-height column. There is no separate "grow" and "stretch" vocabulary.
+
+Justify still runs afterwards, on whatever slack is left, so a layout can mix
+`Fill` with `justify: Center` without special cases.
 
 ## 3. The display list is resolved, not deferred
 
@@ -60,7 +77,28 @@ That costs one extra copy of the damaged area and buys a completely safe paralle
 section. If profiling ever says the copy dominates, the fix is a
 `split_at_mut`-based stripe renderer behind the same interface.
 
-## 5. Direct-memory surfaces
+## 5. Text
+
+Shaping is per line: `wrap_lines` performs greedy word wrapping at a maximum
+width and hard-breaks words wider than the line, then each line is shaped
+independently against a shared glyph cache.
+
+Measure and paint **must** call the same `wrap_lines` with the same width, or
+layout and rasterisation disagree and text overflows its box. That is why
+`LayoutMetrics::measure_text` takes the optional max width instead of leaving
+wrapping to the renderer.
+
+## 6. Focus
+
+Focus lives on `UiTree`, not on the platform layer: `set_focus` and `focus_next`
+update `NodeState::focused` and mark the affected bounds dirty. Traversal order is
+depth-first over visible, focusable nodes.
+
+Pointer-down focuses the innermost focusable ancestor of the hit node, and
+Tab/Shift+Tab are consumed by `Surface::dispatch` before routing. Everything else
+routes from the focused node.
+
+## 7. Direct-memory surfaces
 
 A `DirectSurface` is a pixel buffer that another thread owns and writes.
 
@@ -84,7 +122,7 @@ one. That is the swap-chain consistency guarantee.
 The C ABI exposes this as `clover_direct_begin_write` / `clover_direct_commit`,
 which is exactly the "give me the memory address" escape hatch.
 
-## 6. Pixel format
+## 8. Pixel format
 
 Internally, and on the frame handed to hosts: **premultiplied BGRA8 in `u32`**
 (`0xAARRGGBB`, memory order B,G,R,A on little-endian).
@@ -96,7 +134,7 @@ only at export boundaries (PNG).
 This also matches CloverPic's `RgbaFrame`, so a CloverPlatform surface can be
 handed to the existing adapters without a conversion pass.
 
-## 7. C ABI boundary
+## 9. C ABI boundary
 
 The host keeps: window creation, the event loop, platform input, and presenting
 pixels. CloverPlatform keeps: the tree, layout, rasterisation and the frame
@@ -112,10 +150,11 @@ surface.
 
 ## Open questions
 
-* **Focus and keyboard.** `clover_ui::event::route` handles key events for a
-  focused `NodeId`, but nothing sets focus yet. Needs a focus scope/tab-order
-  model before CloverPic's text fields can migrate.
-* **Text layout.** Shaping is per-line with no line breaking. Paragraph layout is
-  the next significant piece.
+* **Scrolling.** A `Fill` region whose content is taller than the viewport is
+  simply clipped. Scroll containers need a transform in the display list and a
+  wheel-to-offset mapping.
+* **Mixed-style text runs.** Wrapping currently assumes one font size and one
+  colour per node, so a bold span forces a whole extra node.
 * **Styles.** XAML attributes are read verbatim per element. A style/template
   layer needs selector matching before `{Binding}` makes sense.
+* **Animation.** No scheduler yet; the host decides when to ask for a frame.

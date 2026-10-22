@@ -12,6 +12,9 @@ use clover_core::{Align, Color, Edges, Orientation};
 pub enum Length {
     /// Size to content.
     Auto,
+    /// Takes an equal share of the parent's leftover space on the main axis,
+    /// and stretches across the cross axis.
+    Fill,
     /// Logical pixels.
     Px(f32),
     /// Fraction of the parent's available extent, `0.0..=1.0`.
@@ -29,7 +32,9 @@ impl Length {
     /// content.
     pub fn resolve(self, available: f32) -> Option<f32> {
         match self {
-            Length::Auto => None,
+            // Fill depends on what the siblings need, so it cannot be resolved
+            // before the arrange pass.
+            Length::Auto | Length::Fill => None,
             Length::Px(v) => Some(v.max(0.0)),
             Length::Percent(p) => Some((available * p.clamp(0.0, 1.0)).max(0.0)),
         }
@@ -40,6 +45,9 @@ impl Length {
         let text = text.trim();
         if text.eq_ignore_ascii_case("auto") {
             return Some(Length::Auto);
+        }
+        if text.eq_ignore_ascii_case("fill") || text == "*" {
+            return Some(Length::Fill);
         }
         if let Some(percent) = text.strip_suffix('%') {
             return percent.trim().parse::<f32>().ok().map(|v| Length::Percent(v / 100.0));
@@ -105,6 +113,8 @@ pub struct Style {
     pub opacity: f32,
     /// Clip children to this node's bounds.
     pub clip: bool,
+    /// Break text onto multiple lines to fit the content box.
+    pub wrap: bool,
 }
 
 impl Default for Style {
@@ -131,6 +141,7 @@ impl Default for Style {
             text_align: Align::Start,
             opacity: 1.0,
             clip: false,
+            wrap: false,
         }
     }
 }
@@ -158,6 +169,24 @@ impl Style {
         }
         v
     }
+
+    /// Whether this node wants to grow along the parent's main axis.
+    pub fn fills_main(&self, horizontal: bool) -> bool {
+        if horizontal {
+            self.width == Length::Fill
+        } else {
+            self.height == Length::Fill
+        }
+    }
+
+    /// Whether this node wants to fill the parent's cross axis.
+    pub fn fills_cross(&self, horizontal: bool) -> bool {
+        if horizontal {
+            self.height == Length::Fill
+        } else {
+            self.width == Length::Fill
+        }
+    }
 }
 
 #[cfg(test)]
@@ -167,10 +196,26 @@ mod tests {
     #[test]
     fn parses_lengths() {
         assert_eq!(Length::parse("Auto"), Some(Length::Auto));
+        assert_eq!(Length::parse("Fill"), Some(Length::Fill));
+        assert_eq!(Length::parse("*"), Some(Length::Fill));
         assert_eq!(Length::parse("120"), Some(Length::Px(120.0)));
         assert_eq!(Length::parse("120px"), Some(Length::Px(120.0)));
         assert_eq!(Length::parse("50%"), Some(Length::Percent(0.5)));
         assert_eq!(Length::parse("nope"), None);
+    }
+
+    #[test]
+    fn fill_needs_arrange_to_resolve() {
+        assert_eq!(Length::Fill.resolve(100.0), None);
+    }
+
+    #[test]
+    fn fill_axis_classification() {
+        let style = Style { width: Length::Fill, height: Length::Auto, ..Style::default() };
+        assert!(style.fills_main(true), "width fill grows in a row");
+        assert!(!style.fills_main(false), "width fill is a cross fill in a column");
+        assert!(style.fills_cross(false));
+        assert!(!style.fills_cross(true));
     }
 
     #[test]

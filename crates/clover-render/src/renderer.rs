@@ -120,8 +120,8 @@ impl CpuRenderer {
 }
 
 impl LayoutMetrics for CpuRenderer {
-    fn measure_text(&self, text: &str, font_px: f32) -> Size {
-        self.text.measure(text, font_px)
+    fn measure_text(&self, text: &str, font_px: f32, max_width: Option<f32>) -> Size {
+        self.text.measure(text, font_px, max_width)
     }
 
     fn line_height(&self, font_px: f32) -> f32 {

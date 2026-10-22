@@ -460,6 +460,16 @@ fn apply_common_attributes(node: &mut Node, xml: &XmlNode) -> Result<(), XamlErr
     if let Some(v) = xml.attr_bool("Clip") {
         node.style.clip = v;
     }
+    if let Some(v) = xml.attr("TextWrapping") {
+        node.style.wrap = v.trim().eq_ignore_ascii_case("wrap")
+            || v.trim().eq_ignore_ascii_case("wrapwithoverflow");
+    }
+    if let Some(v) = xml.attr_bool("Focusable") {
+        node.focusable = v;
+    }
+    if let Some(v) = xml.attr_bool("IsEnabled") {
+        node.state.disabled = !v;
+    }
     if let Some(v) = xml.attr("HorizontalAlignment") {
         node.style.align = parse_align(v);
     }
@@ -609,6 +619,25 @@ mod tests {
     fn rejects_mismatched_close() {
         let error = parse("<StackPanel></Border>", &NoImages).unwrap_err();
         assert!(error.message.contains("closes"));
+    }
+
+    #[test]
+    fn parses_wrapping_and_focus() {
+        let root = parse(
+            r#"<TextBlock Text="a b c" TextWrapping="Wrap" Focusable="True" Width="Fill"/>"#,
+            &NoImages,
+        )
+        .unwrap();
+        assert!(root.style.wrap);
+        assert!(root.focusable);
+        assert_eq!(root.style.width, crate::style::Length::Fill);
+    }
+
+    #[test]
+    fn text_wrapping_is_off_by_default() {
+        let root = parse(r#"<TextBlock Text="a"/>"#, &NoImages).unwrap();
+        assert!(!root.style.wrap);
+        assert!(!root.focusable);
     }
 
     #[test]

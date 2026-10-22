@@ -29,7 +29,10 @@ pub mod node;
 pub mod style;
 pub mod xaml;
 
-pub use event::{EventPhase, MouseButton, PointerAction, PointerEvent, RouteEntry, UiEvent};
+pub use event::{
+    EventPhase, KeyAction, KeyEvent, Modifiers, MouseButton, PointerAction, PointerEvent,
+    RouteEntry, UiEvent, WheelEvent,
+};
 pub use layout::{EmptyMetrics, LayoutMetrics};
 pub use node::{ImageHandle, Node, NodeId, NodeMode, SurfaceHandle, UiTree, View};
 pub use style::{Fit, Length, NodeState, Style};
