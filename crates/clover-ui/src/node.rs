@@ -104,6 +104,11 @@ pub struct Node {
     pub focusable: bool,
     /// Vertical scrolling state; only used when `scroll.enabled`.
     pub scroll: ScrollState,
+    /// Command identifier reported to the host when this node is activated.
+    ///
+    /// The framework decides *when* activation happens; the host decides what the
+    /// command means. `None` means the node is not actionable.
+    pub action: Option<String>,
 }
 
 impl Default for Node {
@@ -121,6 +126,7 @@ impl Default for Node {
             visible: true,
             focusable: false,
             scroll: ScrollState::default(),
+            action: None,
         }
     }
 }
@@ -277,6 +283,13 @@ impl Node {
         self
     }
 
+    /// Reports `action` to the host when this node is activated by a click or a
+    /// key press.
+    pub fn action(mut self, action: impl Into<String>) -> Self {
+        self.action = Some(action.into());
+        self
+    }
+
     /// Makes this container vertically scrollable and clipping.
     pub fn scrollable(mut self) -> Self {
         self.scroll.enabled = true;
@@ -344,6 +357,26 @@ impl Node {
         for child in &self.children {
             child.walk(visit);
         }
+    }
+
+    /// Nearest ancestor of `id` (inclusive) that carries an action.
+    pub fn find_action_ancestor(&self, id: NodeId) -> Option<(NodeId, &str)> {
+        fn walk<'a>(node: &'a Node, target: NodeId, current: Option<(NodeId, &'a str)>) -> Option<Option<(NodeId, &'a str)>> {
+            let current = match node.action.as_deref() {
+                Some(action) => Some((node.id, action)),
+                None => current,
+            };
+            if node.id == target {
+                return Some(current);
+            }
+            for child in &node.children {
+                if let Some(found) = walk(child, target, current) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        walk(self, id, None).flatten()
     }
 
     /// Nearest scrollable ancestor of `id`, including `id` itself.

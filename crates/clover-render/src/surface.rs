@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use clover_core::{Premul, Rect, Size};
-use clover_ui::{node::Node, RouteEntry, SurfaceHandle, UiEvent, UiTree};
+use clover_ui::{node::Node, NodeId, RouteEntry, SurfaceHandle, UiEvent, UiTree};
 
 use crate::canvas::Canvas;
 use crate::display_list::build;
@@ -156,6 +156,10 @@ pub struct Surface {
     renderer: CpuRenderer,
     direct: HashMap<SurfaceHandle, Arc<DirectSurface>>,
     generation: u64,
+    /// Actions raised since the host last drained the queue.
+    pending_actions: Vec<String>,
+    /// Node that will fire if the pointer is released over it.
+    press_action: Option<NodeId>,
 }
 
 impl Surface {
@@ -168,6 +172,8 @@ impl Surface {
             renderer,
             direct: HashMap::new(),
             generation: 0,
+            pending_actions: Vec::new(),
+            press_action: None,
         };
         surface.resize(width, height, scale);
         Some(surface)
@@ -286,6 +292,29 @@ impl Surface {
         }
     }
 
+    /// Nearest actionable ancestor of the deepest hit node.
+    fn action_target(&self, chain: &[NodeId]) -> Option<(NodeId, String)> {
+        chain.iter().find_map(|id| {
+            self.tree
+                .node(*id)
+                .and_then(|node| node.action.as_ref().map(|action| (node.id, action.clone())))
+        })
+    }
+
+    /// Pops the next action raised by input, if any.
+    pub fn take_action(&mut self) -> Option<String> {
+        if self.pending_actions.is_empty() {
+            None
+        } else {
+            Some(self.pending_actions.remove(0))
+        }
+    }
+
+    /// Queues an action, for hosts that drive the UI themselves.
+    pub fn push_action(&mut self, action: impl Into<String>) {
+        self.pending_actions.push(action.into());
+    }
+
     /// Routes an input event and returns the node chain, capture-first.
     pub fn dispatch(&mut self, event: UiEvent) -> Vec<RouteEntry> {
         match event {
@@ -301,8 +330,23 @@ impl Surface {
                             .find(|id| self.tree.node(*id).map(|n| n.focusable).unwrap_or(false));
                         self.tree.set_focus(focus_target);
                         self.tree.set_pressed(chain.first().copied());
+                        self.press_action = self.action_target(&chain).map(|(id, _)| id);
                     }
-                    clover_ui::PointerAction::Up | clover_ui::PointerAction::Cancel => {
+                    clover_ui::PointerAction::Up => {
+                        // Activation requires press and release on the same
+                        // actionable node, like every desktop toolkit.
+                        let chain = self.tree.hit_chain(p.position);
+                        let release = self.action_target(&chain);
+                        if let (Some(pressed), Some((released, action))) = (self.press_action, release) {
+                            if pressed == released {
+                                self.pending_actions.push(action);
+                            }
+                        }
+                        self.press_action = None;
+                        self.tree.set_pressed(None);
+                    }
+                    clover_ui::PointerAction::Cancel => {
+                        self.press_action = None;
                         self.tree.set_pressed(None);
                     }
                     clover_ui::PointerAction::Move => {}
@@ -334,9 +378,22 @@ impl Surface {
                 }
             }
             UiEvent::Key(k) => {
-                // Tab / Shift+Tab move keyboard focus before routing.
-                if k.action == clover_ui::KeyAction::Down && k.key == 0x09 && !k.repeat {
-                    self.tree.focus_next(k.modifiers.shift());
+                if k.action == clover_ui::KeyAction::Down {
+                    // Tab / Shift+Tab move keyboard focus before routing.
+                    if k.key == 0x09 && !k.repeat {
+                        self.tree.focus_next(k.modifiers.shift());
+                    }
+                    // Enter and Space activate whatever has focus.
+                    if k.key == 0x0D || k.key == 0x20 {
+                        let action = self
+                            .tree
+                            .focus()
+                            .and_then(|id| self.tree.root().find_action_ancestor(id))
+                            .map(|(_, action)| action.to_string());
+                        if let Some(action) = action {
+                            self.pending_actions.push(action);
+                        }
+                    }
                 }
             }
         }
@@ -377,6 +434,78 @@ mod tests {
     fn frame_is_physical_size() {
         let surface = surface_with_button();
         assert_eq!((surface.canvas().width, surface.canvas().height), (200, 200));
+    }
+
+    #[test]
+    fn click_activates_an_actionable_node() {
+        let root = node::column()
+            .background(Color::BLACK)
+            .child(node::button("Run").action("run").name("btn"));
+        let mut surface = Surface::new(root, 200.0, 100.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        let centre = surface.tree().named("btn").unwrap().bounds.center();
+        let click = |surface: &mut Surface, action: PointerAction| {
+            surface.dispatch(UiEvent::Pointer(PointerEvent {
+                action,
+                position: centre,
+                button: clover_ui::MouseButton::Left,
+                ..Default::default()
+            }));
+        };
+        click(&mut surface, PointerAction::Down);
+        click(&mut surface, PointerAction::Up);
+        assert_eq!(surface.take_action().as_deref(), Some("run"));
+        assert_eq!(surface.take_action(), None, "the queue drains");
+    }
+
+    #[test]
+    fn release_outside_the_pressed_node_does_not_activate() {
+        let root = node::column().background(Color::BLACK).child(
+            node::panel()
+                .size(Length::Px(40.0), Length::Px(40.0))
+                .action("nope")
+                .name("btn"),
+        );
+        let mut surface = Surface::new(root, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        surface.dispatch(UiEvent::Pointer(PointerEvent {
+            action: PointerAction::Down,
+            position: Point::new(20.0, 20.0),
+            button: clover_ui::MouseButton::Left,
+            ..Default::default()
+        }));
+        surface.dispatch(UiEvent::Pointer(PointerEvent {
+            action: PointerAction::Up,
+            position: Point::new(150.0, 150.0),
+            button: clover_ui::MouseButton::Left,
+            ..Default::default()
+        }));
+        assert_eq!(surface.take_action(), None);
+    }
+
+    #[test]
+    fn enter_and_space_activate_the_focused_node() {
+        let root = node::panel()
+            .background(Color::BLACK)
+            .child(node::panel().size(Length::Px(40.0), Length::Px(40.0)).action("go").focusable(true));
+        let mut surface = Surface::new(root, 100.0, 100.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        surface.tree_mut().focus_next(false);
+
+        for key in [0x0D, 0x20] {
+            surface.dispatch(UiEvent::Key(clover_ui::KeyEvent {
+                action: clover_ui::KeyAction::Down,
+                key,
+                modifiers: clover_ui::Modifiers::NONE,
+                repeat: false,
+            }));
+            assert_eq!(surface.take_action().as_deref(), Some("go"), "key {key:#x} activates");
+        }
     }
 
     #[test]

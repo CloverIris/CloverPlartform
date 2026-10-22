@@ -150,6 +150,20 @@ uint64_t clover_surface_key(clover_surface *surface, uint32_t key, clover_key_ac
 clover_result clover_surface_wheel(clover_surface *surface, float x, float y, float delta,
                                    uint32_t modifiers);
 
+/*
+ * Actions
+ * -------
+ * A node with `Command="id"` (or `Node::action`) reports `id` when clicked, or
+ * when Enter/Space is pressed while a descendant has focus. Drain after input.
+ */
+
+/* Returns bytes written excluding the NUL, 0 when empty, -1 on error. */
+int32_t clover_surface_take_action(clover_surface *surface, char *buffer, uint32_t capacity);
+
+/* Shows or hides a node by x:Name and repaints it. */
+clover_result clover_surface_set_visible(clover_surface *surface, const char *name_utf8,
+                                         bool visible);
+
 /* Returns the focused node id, or 0. */
 uint64_t clover_surface_focus(clover_surface *surface);
 

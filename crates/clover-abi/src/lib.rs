@@ -278,6 +278,68 @@ pub unsafe extern "C" fn clover_surface_wheel(
     CloverResult::Ok
 }
 
+/// Pops the next action raised by input into `buffer` (NUL-terminated).
+///
+/// Returns the length written excluding the terminator, `0` when the queue is
+/// empty, or `-1` when the buffer is too small. Drain in a loop after pushing
+/// input until it returns 0.
+///
+/// # Safety
+/// `buffer` must be writable for `capacity` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_take_action(
+    surface: *mut CloverSurface,
+    buffer: *mut c_char,
+    capacity: u32,
+) -> i32 {
+    let Some(surface) = surface.as_mut() else { return -1 };
+    if buffer.is_null() || capacity == 0 {
+        return -1;
+    }
+    let Some(action) = surface.surface.take_action() else { return 0 };
+    let bytes = action.as_bytes();
+    if bytes.len() + 1 > capacity as usize {
+        // Put it back: the host should retry with a bigger buffer.
+        surface.surface.push_action(action);
+        return -1;
+    }
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer as *mut u8, bytes.len());
+    *buffer.add(bytes.len()) = 0;
+    bytes.len() as i32
+}
+
+/// Shows or hides a named node and repaints its area.
+///
+/// This is the retained-mode mutation hook: the host changes state it owns and
+/// the framework re-renders only what moved.
+///
+/// # Safety
+/// `name_utf8` must be a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_set_visible(
+    surface: *mut CloverSurface,
+    name_utf8: *const c_char,
+    visible: bool,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if name_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let Ok(name) = CStr::from_ptr(name_utf8).to_str() else {
+        return CloverResult::ParseError;
+    };
+    let tree = surface.surface.tree_mut();
+    let bounds = match tree.named_mut(name) {
+        Some(node) => {
+            node.visible = visible;
+            node.bounds
+        }
+        None => return CloverResult::UnknownHandle,
+    };
+    tree.damage().add(bounds);
+    CloverResult::Ok
+}
+
 /// Returns the id of the focused node, or 0.
 ///
 /// # Safety

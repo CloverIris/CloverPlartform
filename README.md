@@ -14,7 +14,7 @@ One page, two stylesheets — no colour appears in the markup:
 ![Dark theme](docs/theme-dark.png)
 ![Light theme](docs/theme-light.png)
 
-> Status: **0.4 — styling**. The pipeline works end to end (tree →
+> Status: **0.5 — actions**. The pipeline works end to end (tree →
 > layout → display list → tile-parallel raster → frame), both authoring
 > front-ends produce the same tree, layout supports flex-style `Fill`, text
 > wraps, and keyboard focus is routed. Styles, templates, bindings and animation
@@ -45,6 +45,10 @@ One page, two stylesheets — no colour appears in the markup:
   events route to the nearest scrollable ancestor.
 * **Interaction feedback.** Hovered surfaces lighten and pressed ones darken by
   default, with no per-widget code.
+* **Actions.** `Command="id"` on any element reports `id` to the host when it is
+  clicked, or when Enter/Space is pressed on a focused descendant. Press and
+  release must land on the same node, like any desktop toolkit. The framework
+  decides *when*, the host decides *what*.
 * **Hosts.** A C ABI, exercised by CloverPic's macOS adapter; see
   [docs/MIGRATION.md](docs/MIGRATION.md).
 * **Direct-memory child surfaces.** A region of the UI can be handed to another
@@ -119,7 +123,19 @@ node::direct_surface(handle).size(Length::Fill, Length::Fill)
 ```
 
 The two authoring modes are interchangeable: a XAML page can contain
-declaratively built children (`Node::child`) and vice versa. A retained-mode shell can mount a
+declaratively built children (`Node::child`) and vice versa. Hosts react to
+input by draining actions:
+
+```objc
+char buffer[128];
+loop:
+    clover_surface_pointer(surface, x, y, CLOVER_POINTER_DOWN, 1, mods);
+    clover_surface_pointer(surface, x, y, CLOVER_POINTER_UP, 1, mods);
+    while (clover_surface_take_action(surface, buffer, sizeof buffer) > 0) {
+        if (strcmp(buffer, "toggle:canvas") == 0)
+            clover_surface_set_visible(surface, "canvas", false);
+    }
+``` A retained-mode shell can mount a
 declarative subtree at runtime:
 
 ```rust

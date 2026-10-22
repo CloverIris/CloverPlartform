@@ -19,6 +19,9 @@
 //! | `ScrollViewer` | vertical scrolling container |
 //! | `CloverSurface` | `Id`, a direct-memory child surface |
 //!
+//! `Command="id"` on any element makes it actionable: clicking it, or pressing
+//! Enter/Space while it has focus, reports `id` to the host.
+//!
 //! ## Not yet
 //!
 //! Styles, templates, `{Binding}`, property elements (`<Grid.RowDefinitions>`),
@@ -562,6 +565,9 @@ fn apply_common_attributes(node: &mut Node, xml: &XmlNode) -> Result<(), XamlErr
     if let Some(key) = xml.attr("Key") {
         node.key = Some(key.to_string());
     }
+    if let Some(command) = xml.attr("Command") {
+        node.action = Some(command.to_string());
+    }
 
     for (attr, target) in [
         ("Width", AttrTarget::Width),
@@ -739,6 +745,14 @@ mod tests {
     fn parses_inner_text_when_attribute_missing() {
         let root = parse("<TextBlock>Hello &amp; bye</TextBlock>", &NoImages).unwrap();
         assert_eq!(root.view, node::View::Text("Hello & bye".into()));
+    }
+
+    #[test]
+    fn parses_command_actions() {
+        let root = parse(r#"<Button Content="OK" Command="new-canvas"/>"#, &NoImages).unwrap();
+        assert_eq!(root.action.as_deref(), Some("new-canvas"));
+        let plain = parse(r#"<Button Content="OK"/>"#, &NoImages).unwrap();
+        assert!(plain.action.is_none());
     }
 
     #[test]
