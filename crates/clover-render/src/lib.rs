@@ -7,6 +7,7 @@
 //! that changed, spread across cores.
 
 pub mod canvas;
+pub mod context;
 pub mod display_list;
 pub mod image;
 pub mod renderer;
@@ -14,6 +15,10 @@ pub mod surface;
 pub mod text;
 
 pub use canvas::{Canvas, ImagePixels};
+pub use context::{
+    ColorSpace, DisplayCapabilities, FallbackReason, FormatChoice, FormatRequest, RenderContext,
+    SurfaceFormat,
+};
 pub use display_list::{build, DisplayList, DrawCmd};
 pub use image::{decode_png_bytes, decode_png_file, ImageStore};
 pub use renderer::CpuRenderer;

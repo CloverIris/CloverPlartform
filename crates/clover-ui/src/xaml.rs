@@ -79,6 +79,24 @@ where
     }
 }
 
+/// Extracts `key` from `{StaticResource key}`; a bare string is returned as-is.
+pub fn static_resource_key(raw: &str) -> Option<&str> {
+    let trimmed = raw.trim();
+    if let Some(inner) = trimmed.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) {
+        let inner = inner.trim();
+        let key = inner
+            .strip_prefix("StaticResource")
+            .or_else(|| inner.strip_prefix("Resource"))?
+            .trim();
+        return if key.is_empty() { None } else { Some(key) };
+    }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
 /// Parses a XAML fragment into a node tree.
 pub fn parse(source: &str, images: &dyn ImageResolver) -> Result<Node, XamlError> {
     parse_with_styles(source, images, &crate::style_sheet::StyleSheet::new())
@@ -223,6 +241,8 @@ fn parse_styles_node(node: &XmlNode) -> Result<crate::style_sheet::StyleSheet, X
 pub struct UiDocument {
     pub data: crate::binding::DataContext,
     pub sheet: crate::style_sheet::StyleSheet,
+    /// `(key, relative path)` pairs from `<Resources>`.
+    resources: Vec<(String, String)>,
     root: XmlNode,
     source: String,
 }
@@ -237,6 +257,7 @@ impl UiDocument {
 
         let mut data = crate::binding::DataContext::new();
         let mut sheet = crate::style_sheet::StyleSheet::new();
+        let mut resources: Vec<(String, String)> = Vec::new();
         let mut root: Option<XmlNode> = None;
 
         for child in &document.children {
@@ -270,6 +291,16 @@ impl UiDocument {
                 }
             } else if name == "styles" {
                 sheet = parse_styles_node(child)?;
+            } else if name == "resources" {
+                for entry in &child.children {
+                    if !entry.name.eq_ignore_ascii_case("Image") {
+                        return err(entry.offset, "expected <Image> inside <Resources>");
+                    }
+                    let (Some(key), Some(source)) = (entry.attr("Key"), entry.attr("Source")) else {
+                        return err(entry.offset, "<Image> needs Key and Source");
+                    };
+                    resources.push((key.to_string(), source.to_string()));
+                }
             } else {
                 if root.is_some() {
                     return err(child.offset, "a .cui document has exactly one page root");
@@ -281,7 +312,7 @@ impl UiDocument {
         let Some(root) = root else {
             return err(document.offset, "a .cui document needs a page root");
         };
-        Ok(Self { data, sheet, root, source: source.to_string() })
+        Ok(Self { data, sheet, resources, root, source: source.to_string() })
     }
 
     /// Reads and parses a `.cui` file.
@@ -289,6 +320,14 @@ impl UiDocument {
         let source = std::fs::read_to_string(path.as_ref())
             .map_err(|error| format!("read .cui failed: {error}"))?;
         Self::parse(&source).map_err(|error| error.to_string())
+    }
+
+    /// Image resources declared by the document, as `(key, relative path)`.
+    ///
+    /// Paths are relative to the `.cui` file, so a host resolves them against the
+    /// document's directory before loading.
+    pub fn resources(&self) -> &[(String, String)] {
+        &self.resources
     }
 
     /// The original source, so hosts can keep it around.
@@ -753,6 +792,26 @@ fn apply_common_attributes(
     if let Some(v) = xml.attr("Spacing").and_then(|v| v.trim().parse::<f32>().ok()) {
         node.style.gap = v;
     }
+    if let Some(raw) = xml.attr("BackgroundImage") {
+        let source = static_resource_key(raw).unwrap_or(raw);
+        match context.images.resolve(&context.data.resolve_text(source)) {
+            Some(handle) => {
+                let fit = match xml.attr("BackgroundImageFit").map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+                    Some("contain") => crate::style::Fit::Contain,
+                    Some("cover") => crate::style::Fit::Cover,
+                    _ => crate::style::Fit::Fill,
+                };
+                let opacity = xml
+                    .attr_f32("BackgroundImageOpacity")
+                    .map(|v| v.clamp(0.0, 1.0))
+                    .unwrap_or(1.0);
+                node.style.brush = Some(crate::style::Brush::Texture { handle, fit, opacity });
+            }
+            None => {
+                return err(xml.offset, format!("background image '{source}' was not registered"))
+            }
+        }
+    }
     if let Some(v) = xml.attr("Background") {
         node.style.background = context
             .data
@@ -906,6 +965,42 @@ mod tests {
     fn parses_inner_text_when_attribute_missing() {
         let root = parse("<TextBlock>Hello &amp; bye</TextBlock>", &NoImages).unwrap();
         assert_eq!(root.view, node::View::Text("Hello & bye".into()));
+    }
+
+    #[test]
+    fn extracts_static_resource_keys() {
+        assert_eq!(static_resource_key("{StaticResource logo}"), Some("logo"));
+        assert_eq!(static_resource_key("{ StaticResource logo }"), Some("logo"));
+        assert_eq!(static_resource_key("logo"), Some("logo"));
+        assert_eq!(static_resource_key("{}"), None);
+    }
+
+    #[test]
+    fn background_image_resolves_through_the_resolver() {
+        let resolver = |source: &str| if source == "paper" { Some(ImageHandle(3)) } else { None };
+        let page = parse(
+            r#"<Panel BackgroundImage="{StaticResource paper}" BackgroundImageFit="Cover"/>"#,
+            &resolver,
+        )
+        .unwrap();
+        match &page.style.brush {
+            Some(crate::style::Brush::Texture { handle, fit, opacity }) => {
+                assert_eq!(*handle, ImageHandle(3));
+                assert_eq!(*fit, Fit::Cover);
+                assert_eq!(*opacity, 1.0);
+            }
+            other => panic!("expected a texture brush, got {other:?}"),
+        }
+        assert!(parse(r#"<Panel BackgroundImage="{StaticResource missing}"/>"#, &resolver).is_err());
+    }
+
+    #[test]
+    fn cui_document_exposes_resources() {
+        let document = UiDocument::parse(
+            r#"<Ui><Resources><Image Key="logo" Source="art/logo.png"/></Resources><Panel/></Ui>"#,
+        )
+        .unwrap();
+        assert_eq!(document.resources(), &[("logo".to_string(), "art/logo.png".to_string())]);
     }
 
     #[test]

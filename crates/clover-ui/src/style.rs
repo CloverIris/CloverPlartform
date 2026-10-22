@@ -57,6 +57,30 @@ impl Length {
     }
 }
 
+/// How a control's background is painted.
+///
+/// The solid case stays a plain colour so the common path never touches the
+/// image pipeline; textures are resolved to a handle at build time, so the
+/// renderer never sees a string.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Brush {
+    /// Flat colour.
+    Solid(Color),
+    /// An image, fitted into the background box.
+    Texture {
+        handle: crate::node::ImageHandle,
+        fit: Fit,
+        /// Multiplied into the texture's alpha.
+        opacity: f32,
+    },
+}
+
+impl Brush {
+    pub fn solid(color: Color) -> Self {
+        Brush::Solid(color)
+    }
+}
+
 /// How an image is fitted into its box.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Fit {
@@ -93,6 +117,9 @@ pub struct Style {
 
     /// Child flow direction for containers.
     pub direction: Orientation,
+    /// When set, children are laid out in this many uniform columns instead of a
+    /// single stack line.
+    pub grid_columns: Option<u32>,
     /// Main-axis gap between children.
     pub gap: f32,
     /// Cross-axis alignment of children.
@@ -101,6 +128,8 @@ pub struct Style {
     pub justify: Align,
 
     pub background: Color,
+    /// Background texture; when set it paints over `background`.
+    pub brush: Option<Brush>,
     pub radius: f32,
     pub border_width: f32,
     pub border_color: Color,
@@ -132,10 +161,12 @@ impl Default for Style {
             margin: Edges::ZERO,
             padding: Edges::ZERO,
             direction: Orientation::Vertical,
+            grid_columns: None,
             gap: 0.0,
             align: Align::Stretch,
             justify: Align::Start,
             background: Color::TRANSPARENT,
+            brush: None,
             radius: 0.0,
             border_width: 0.0,
             border_color: Color::TRANSPARENT,

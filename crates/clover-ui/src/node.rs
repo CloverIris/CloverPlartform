@@ -229,6 +229,12 @@ impl Node {
         self
     }
 
+    /// Lays children out in `columns` uniform columns.
+    pub fn grid_columns(mut self, columns: u32) -> Self {
+        self.style.grid_columns = Some(columns.max(1));
+        self
+    }
+
     pub fn align(mut self, align: Align) -> Self {
         self.style.align = align;
         self
@@ -241,6 +247,12 @@ impl Node {
 
     pub fn background(mut self, color: Color) -> Self {
         self.style.background = color;
+        self
+    }
+
+    /// Uses `handle` as a fitted background texture.
+    pub fn background_image(mut self, handle: ImageHandle, fit: crate::style::Fit) -> Self {
+        self.style.brush = Some(crate::style::Brush::Texture { handle, fit, opacity: 1.0 });
         self
     }
 
@@ -506,6 +518,14 @@ pub fn row() -> Node {
 /// A stack with an explicit direction.
 pub fn stack(direction: Orientation) -> Node {
     Node::new().direction(direction)
+}
+
+/// A uniform grid container: `columns` equal cells per row.
+pub fn grid(columns: u32) -> Node {
+    let mut node = Node::new();
+    node.style.grid_columns = Some(columns.max(1));
+    node.style.direction = Orientation::Vertical;
+    node
 }
 
 /// A plain panel, useful as a positioned box.

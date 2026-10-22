@@ -60,12 +60,14 @@ pub fn decode_png_bytes(bytes: &[u8]) -> Result<ImagePixels, String> {
 #[derive(Default)]
 pub struct ImageStore {
     images: HashMap<ImageHandle, Arc<ImagePixels>>,
+    /// Handles addressable by a stable name, used by `.cui` resources.
+    names: HashMap<String, ImageHandle>,
     next: u64,
 }
 
 impl ImageStore {
     pub fn new() -> Self {
-        Self { images: HashMap::new(), next: 1 }
+        Self { images: HashMap::new(), names: HashMap::new(), next: 1 }
     }
 
     /// Registers decoded pixels and returns a handle.
@@ -80,6 +82,22 @@ impl ImageStore {
     pub fn load_png(&mut self, path: impl AsRef<Path>) -> Result<ImageHandle, String> {
         let pixels = decode_png_file(path)?;
         Ok(self.insert(pixels))
+    }
+
+    /// Loads a PNG and binds it to `name`, replacing any previous binding.
+    pub fn load_png_named(
+        &mut self,
+        name: impl Into<String>,
+        path: impl AsRef<Path>,
+    ) -> Result<ImageHandle, String> {
+        let handle = self.load_png(path)?;
+        self.names.insert(name.into(), handle);
+        Ok(handle)
+    }
+
+    /// The handle bound to `name`, if any.
+    pub fn handle_for(&self, name: &str) -> Option<ImageHandle> {
+        self.names.get(name).copied()
     }
 
     pub fn get(&self, handle: ImageHandle) -> Option<&Arc<ImagePixels>> {

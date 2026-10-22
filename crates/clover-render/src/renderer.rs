@@ -175,13 +175,13 @@ fn render_tile(list: &DisplayList, tile: Rect, clear: Premul) -> Canvas {
                 }
                 canvas.stroke_rect(r, *radius, *width, *color, c);
             }
-            DrawCmd::Image { rect, image, clip } => {
+            DrawCmd::Image { rect, image, clip, opacity } => {
                 let r = rect.offset(dx, dy);
                 let c = clip.offset(dx, dy).intersect(local_bounds);
                 if c.is_empty() {
                     continue;
                 }
-                canvas.draw_image(r, image, c);
+                canvas.draw_image_with_opacity(r, image, c, *opacity);
             }
             DrawCmd::Text { run, color, clip } => {
                 let c = clip.offset(dx, dy).intersect(local_bounds);

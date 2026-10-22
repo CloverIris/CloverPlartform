@@ -34,6 +34,8 @@ pub enum DrawCmd {
         rect: Rect,
         image: Arc<ImagePixels>,
         clip: Rect,
+        /// Multiplied into every texel when blitting.
+        opacity: f32,
     },
     Text {
         run: Arc<TextRun>,
@@ -107,7 +109,23 @@ fn walk(
         }
     };
 
-    if node.style.background.a > 0 {
+    if let Some(clover_ui::style::Brush::Texture { handle, fit, opacity }) = &node.style.brush {
+        if let Some(image) = images.get(*handle) {
+            let natural = Size::new(image.width as f32, image.height as f32);
+            let fitted = fit_rect(rect, *fit, natural);
+            // A background texture never paints outside its own control: `Cover`
+            // crops, it does not overflow into the neighbours.
+            let brush_clip = clip.intersect(rect);
+            if !brush_clip.is_empty() {
+                out.push(DrawCmd::Image {
+                    rect: fitted,
+                    image: Arc::clone(image),
+                    clip: brush_clip,
+                    opacity: *opacity,
+                });
+            }
+        }
+    } else if node.style.background.a > 0 {
         // Default interaction feedback: hovered surfaces lift, pressed ones sink.
         // Skins that want their own visuals can set the background to transparent
         // and draw their own state on top.
@@ -173,7 +191,7 @@ fn walk(
             if let Some(image) = images.get(*handle) {
                 let content_box = node.style.padding.deflate(node.bounds).scale(scale);
                 let fitted = fit_rect(content_box, *fit, Size::new(image.width as f32, image.height as f32));
-                out.push(DrawCmd::Image { rect: fitted, image: Arc::clone(image), clip });
+                out.push(DrawCmd::Image { rect: fitted, image: Arc::clone(image), clip, opacity: 1.0 });
             }
         }
         View::TextInput { text: value, placeholder, caret } => {

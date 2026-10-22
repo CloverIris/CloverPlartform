@@ -88,6 +88,39 @@ layout and rasterisation disagree and text overflows its box. That is why
 `LayoutMetrics::measure_text` takes the optional max width instead of leaving
 wrapping to the renderer.
 
+## 5b. Render context
+
+`RenderContext` is the seam a GPU backend will plug into: format, colour space,
+scale, viewport, and later the command-recording state. The CPU renderer is one
+consumer of it.
+
+Format negotiation is a separate, explicit step rather than something the
+renderer decides quietly:
+
+```text
+FormatRequest (host wants HDR / wide gamut)
+  + DisplayCapabilities (what the display accepts)
+  + hdr_raster (what this build can actually paint)
+    -> FormatChoice { format, color_space, fallback: Option<Reason> }
+```
+
+Today `hdr_raster` is false, so an HDR request lands on `Bgra8Sdr` with
+`FallbackReason::HdrRasterUnavailable`. That is a *reported* fallback, not a
+silent one — the whole point of recording the reason is that a host can surface
+it and a future float raster path only has to flip one flag.
+
+## 5c. StyleBrush
+
+A background is either a solid colour or a texture. Solid stays a plain colour so
+the common path never touches the image pipeline; textures carry an
+`ImageHandle` resolved while the page is built, so the renderer never sees a path
+or a resource name.
+
+`.cui` declares images in `<Resources>` with paths relative to the document, and
+the ABI resolves and registers them before building. A background texture is
+clipped to its own control, so `Cover` crops instead of overflowing into
+neighbours.
+
 ## 6. UI documents
 
 A `.cui` file is `<Ui>` wrapping three optional sections: `<Data>`, `<Styles>`,

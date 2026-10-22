@@ -180,11 +180,17 @@ impl Canvas {
     /// Blits a premultiplied source image with alpha, scaled into `dest`.
     ///
     /// Uses bilinear sampling when scaling so UI images stay smooth.
-    pub fn draw_image(
+    pub fn draw_image(&mut self, dest: Rect, source: &ImagePixels, clip: Rect) {
+        self.draw_image_with_opacity(dest, source, clip, 1.0);
+    }
+
+    /// Same as [`Self::draw_image`] with a global alpha multiplier.
+    pub fn draw_image_with_opacity(
         &mut self,
         dest: Rect,
         source: &ImagePixels,
         clip: Rect,
+        opacity: f32,
     ) {
         if source.width == 0 || source.height == 0 || source.pixels.is_empty() {
             return;
@@ -210,6 +216,11 @@ impl Canvas {
                 if color.a() == 0 {
                     continue;
                 }
+                let color = if opacity >= 1.0 {
+                    color
+                } else {
+                    color.with_coverage((opacity.clamp(0.0, 1.0) * 255.0) as u8)
+                };
                 self.blend(x, y, color, clip);
             }
         }

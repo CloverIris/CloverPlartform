@@ -75,6 +75,10 @@ pub fn measure(node: &Node, available: Size, metrics: &dyn LayoutMetrics) -> Siz
         explicit_h.map(|h| (h - padding.vertical()).max(0.0)).unwrap_or(available.h),
     );
 
+    if let Some(columns) = style.grid_columns {
+        return measure_grid(node, available, metrics, columns.max(1) as usize);
+    }
+
     let mut content = Size::ZERO;
     let horizontal = style.direction.is_horizontal();
 
@@ -137,6 +141,107 @@ pub fn measure(node: &Node, available: Size, metrics: &dyn LayoutMetrics) -> Siz
     Size::new(style.clamp_width(width), style.clamp_height(height))
 }
 
+fn measure_grid(node: &Node, available: Size, metrics: &dyn LayoutMetrics, columns: usize) -> Size {
+    let style = &node.style;
+    let padding = style.padding;
+    let explicit_w = style.width.resolve(available.w);
+    let explicit_h = style.height.resolve(available.h);
+    let inner_w = explicit_w
+        .map(|w| (w - padding.horizontal()).max(0.0))
+        .unwrap_or((available.w - padding.horizontal()).max(0.0));
+    let cell_w = (inner_w / columns as f32).max(0.0);
+
+    let mut row_heights: Vec<f32> = Vec::new();
+    let mut widest = 0.0f32;
+    for (index, child) in node.children.iter().filter(|c| c.visible).enumerate() {
+        let margin = child.style.margin;
+        let cell_avail = Size::new((cell_w - margin.horizontal()).max(0.0), available.h);
+        let size = measure(child, cell_avail, metrics);
+        widest = widest.max(size.w + margin.horizontal());
+        let row = index / columns;
+        if row >= row_heights.len() {
+            row_heights.push(0.0);
+        }
+        row_heights[row] = row_heights[row].max(size.h + margin.vertical());
+    }
+    let content_h: f32 = row_heights.iter().sum();
+    let width = explicit_w.unwrap_or((cell_w * columns as f32).min(widest.max(cell_w * columns as f32)))
+        .max(0.0);
+    let height = explicit_h.unwrap_or(content_h + padding.vertical()).max(0.0);
+    Size::new(style.clamp_width(width), style.clamp_height(height))
+}
+
+fn arrange_grid(node: &mut Node, content_box: Rect, metrics: &dyn LayoutMetrics, columns: usize) {
+    let content = content_box.size();
+    let cell_w = (content.w / columns as f32).max(0.0);
+    let indices: Vec<usize> = node
+        .children
+        .iter()
+        .enumerate()
+        .filter(|(_, child)| child.visible)
+        .map(|(index, _)| index)
+        .collect();
+    if indices.is_empty() {
+        return;
+    }
+
+    let rows = (indices.len() + columns - 1) / columns;
+    let mut row_heights = vec![0.0f32; rows];
+    for (slot, index) in indices.iter().enumerate() {
+        let margin = node.children[*index].style.margin;
+        let measured = measure(
+            &node.children[*index],
+            Size::new((cell_w - margin.horizontal()).max(0.0), content.h),
+            metrics,
+        );
+        let row = slot / columns;
+        row_heights[row] = row_heights[row].max(measured.h + margin.vertical());
+    }
+
+    // Rows fill a container that asked for a definite height; a content-sized
+    // grid keeps its measured rows.
+    let natural: f32 = row_heights.iter().sum();
+    if node.style.height != crate::style::Length::Auto && content.h > 0.5 {
+        if natural > 0.5 {
+            let stretch = content.h / natural;
+            for height in row_heights.iter_mut() {
+                *height *= stretch;
+            }
+        } else {
+            let even = content.h / rows as f32;
+            for height in row_heights.iter_mut() {
+                *height = even;
+            }
+        }
+    }
+
+    let mut y = content_box.y;
+    for (row, row_height) in row_heights.iter().enumerate() {
+        let height = *row_height;
+        for column in 0..columns {
+            let slot = row * columns + column;
+            if slot >= indices.len() {
+                break;
+            }
+            let index = indices[slot];
+            let child = &mut node.children[index];
+            let margin = child.style.margin;
+            let x = content_box.x + cell_w * column as f32;
+            arrange(
+                child,
+                Rect::new(
+                    x + margin.left,
+                    y + margin.top,
+                    (cell_w - margin.horizontal()).max(0.0),
+                    (height - margin.vertical()).max(0.0),
+                ),
+                metrics,
+            );
+        }
+        y += height;
+    }
+}
+
 fn arrange(node: &mut Node, border_box: Rect, metrics: &dyn LayoutMetrics) {
     node.bounds = border_box;
     if !node.visible || node.children.is_empty() {
@@ -144,6 +249,10 @@ fn arrange(node: &mut Node, border_box: Rect, metrics: &dyn LayoutMetrics) {
     }
 
     let content_box = node.style.padding.deflate(border_box);
+    if let Some(columns) = node.style.grid_columns {
+        arrange_grid(node, content_box, metrics, columns.max(1) as usize);
+        return;
+    }
     let content_size = content_box.size();
     let horizontal = node.style.direction.is_horizontal();
     let gap = node.style.gap;
@@ -520,6 +629,42 @@ mod tests {
         let row = &root.children[0];
         assert_eq!(row.bounds.h, 80.0);
         assert_eq!(row.children[0].bounds.w, 100.0, "inner fill spans the row");
+    }
+
+    #[test]
+    fn grid_places_children_in_uniform_cells() {
+        let mut root = node::grid(2)
+            .size(Length::Px(200.0), Length::Px(100.0))
+            .child(node::panel().name("a"))
+            .child(node::panel().name("b"))
+            .child(node::panel().name("c"));
+        layout(&mut root, size(200.0, 100.0), &EmptyMetrics);
+        assert_eq!(root.children[0].bounds, Rect::new(0.0, 0.0, 100.0, 50.0));
+        assert_eq!(root.children[1].bounds, Rect::new(100.0, 0.0, 100.0, 50.0));
+        assert_eq!(root.children[2].bounds, Rect::new(0.0, 50.0, 100.0, 50.0));
+    }
+
+    #[test]
+    fn grid_skips_hidden_children() {
+        let mut root = node::grid(2)
+            .size(Length::Px(200.0), Length::Px(100.0))
+            .child(node::panel().name("a"))
+            .child(node::panel().name("hidden").visible(false))
+            .child(node::panel().name("c"));
+        layout(&mut root, size(200.0, 100.0), &EmptyMetrics);
+        assert_eq!(root.children[2].bounds.x, 100.0, "c takes the second cell");
+    }
+
+    #[test]
+    fn grid_measures_rows_from_content() {
+        let mut root = node::grid(2).child(
+            node::panel()
+                .size(Length::Auto, Length::Px(30.0))
+                .margin(Edges::all(5.0)),
+        );
+        layout(&mut root, size(200.0, 400.0), &EmptyMetrics);
+        assert_eq!(root.children[0].bounds.h, 30.0);
+        assert_eq!(root.children[0].bounds.x, 5.0);
     }
 
     #[test]

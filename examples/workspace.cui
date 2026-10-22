@@ -1,4 +1,8 @@
 <Ui>
+  <Resources>
+    <Image Key="pattern" Source="pattern.png"/>
+  </Resources>
+
   <Data>
     <Value Key="app" Text="CloverPic"/>
     <Value Key="doc" Text="untitled.cloverpic"/>
@@ -46,7 +50,9 @@
         </ScrollViewer>
       </StackPanel>
 
-      <Panel x:Name="panel" Width="Fill" Height="Fill" Background="#15171A">
+      <Panel x:Name="panel" Width="Fill" Height="Fill" Background="#15171A"
+             BackgroundImage="{StaticResource pattern}" BackgroundImageFit="Cover"
+             BackgroundImageOpacity="0.85">
         <TextBlock Text="{Binding doc}" FontSize="16" Foreground="#E8ECF0"/>
       </Panel>
     </StackPanel>

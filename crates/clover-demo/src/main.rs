@@ -97,16 +97,33 @@ fn main() {
     println!("  output           : {}", out.display());
     println!("  scrolled output  : {} (4 wheel notches)", scrolled.display());
 
-    // A whole UI from one .cui file: data + styles + page, bindings resolved.
+    // A whole UI from one .cui file: resources + data + styles + page.
+    write_pattern("examples/pattern.png");
     if let Ok(document) = xaml::UiDocument::from_path("examples/workspace.cui") {
-        let page = document.build(&xaml::NoImages).expect("cui build");
-        let mut cui_surface = Surface::new(page, 760.0, 480.0, 2.0).expect("system font required");
+        let mut cui_surface =
+            Surface::new(node::panel(), 760.0, 480.0, 2.0).expect("system font required");
+        for (key, relative) in document.resources() {
+            let full = std::path::Path::new("examples").join(relative);
+            cui_surface
+                .renderer_mut()
+                .images
+                .load_png_named(key.clone(), &full)
+                .expect("resource image");
+        }
+        let root = {
+            let surface = &cui_surface;
+            document
+                .build(&|key: &str| surface.renderer().images.handle_for(key))
+                .expect("cui build")
+        };
+        cui_surface.set_root(root);
         cui_surface.invalidate_all();
         let _ = cui_surface.frame();
         let path = std::path::Path::new("demo-cui.png");
         write_png(path, &cui_surface).expect("write cui png");
-        println!("  cui document     : {} ({} values, {} rules)", path.display(),
-                 document.data.len(), document.sheet.len());
+        println!("  cui document     : {} ({} values, {} rules, {} resources)",
+                 path.display(), document.data.len(), document.sheet.len(),
+                 document.resources().len());
     }
 
     // The same page, one stylesheet each. No colour appears in the markup.
@@ -262,6 +279,33 @@ const LIGHT_THEME: &str = r##"
   <Style x:Name="primary" Background="#2F6FD0" Foreground="#FFFFFF" BorderThickness="1" BorderBrush="#2A64BC"/>
   <Style x:Name="footnote" FontSize="11" Foreground="#7B838D"/>
 </Styles>"##;
+
+/// Writes a small pattern texture so `.cui` resources have something to load.
+fn write_pattern(path: &str) {
+    const SIZE: u32 = 96;
+    let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let checker = ((x / 12) + (y / 12)) % 2 == 0;
+            let stripe = (x + y) % 48 < 6;
+            let (r, g, b) = if stripe {
+                (0x2F, 0x6F, 0xD0)
+            } else if checker {
+                (0x1E, 0x22, 0x27)
+            } else {
+                (0x18, 0x1B, 0x1F)
+            };
+            rgba.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    let Ok(file) = std::fs::File::create(path) else { return };
+    let mut encoder = png::Encoder::new(BufWriter::new(file), SIZE, SIZE);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    if let Ok(mut writer) = encoder.write_header() {
+        let _ = writer.write_image_data(&rgba);
+    }
+}
 
 /// Writes premultiplied pixels straight into the direct surface.
 fn paint_canvas(canvas: &Arc<DirectSurface>) {

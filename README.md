@@ -23,7 +23,7 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 
 ![A .cui document rendered by the framework](docs/cui.png)
 
-> Status: **0.7 — UI documents**. The pipeline works end to end (tree →
+> Status: **0.8 — render context, grid, textured brushes**. The pipeline works end to end (tree →
 > layout → display list → tile-parallel raster → frame), both authoring
 > front-ends produce the same tree, layout supports flex-style `Fill`, text
 > wraps, and keyboard focus is routed. Styles, templates, bindings and animation
@@ -56,6 +56,15 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
   </Ui>
   ```
 
+* **Render context.** `RenderContext` describes the target (format, colour space,
+  scale, viewport) and is what a GPU backend would consume. Format negotiation is
+  explicit: the host states what it wants, the display states what it supports,
+  and the result records *why* it fell back.
+* **Grid layout.** `Grid Columns="3"` / `Node::grid(3)` places children in uniform
+  cells, filling a definite height and sizing to content otherwise.
+* **Textured backgrounds.** `BackgroundImage="{StaticResource key}"` paints a
+  fitted, cropped texture through `StyleBrush`; `.cui` declares the images in
+  `<Resources>`.
 * **Stylesheets.** `<Styles>` with type, class, name and universal selectors,
   ordered by specificity. Styles provide defaults; attributes win; font size and
   text colour cascade.

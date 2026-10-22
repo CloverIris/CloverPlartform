@@ -187,6 +187,10 @@ impl Surface {
         &mut self.tree
     }
 
+    pub fn renderer(&self) -> &CpuRenderer {
+        &self.renderer
+    }
+
     pub fn renderer_mut(&mut self) -> &mut CpuRenderer {
         &mut self.renderer
     }
