@@ -1,0 +1,14 @@
+[package]
+name = "clover-demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Headless demo that renders a mixed XAML + declarative UI to PNG."
+
+[dependencies]
+clover-core = { workspace = true }
+clover-ui = { workspace = true }
+clover-render = { workspace = true }
+png = { workspace = true }

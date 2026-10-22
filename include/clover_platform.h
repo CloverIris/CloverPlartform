@@ -1,0 +1,144 @@
+/*
+ * CloverPlatform C ABI
+ * ====================
+ *
+ * Embed the CloverPlatform UI + CPU renderer in a native host (C, C++,
+ * Objective-C++). The host owns the window and the event loop; CloverPlatform
+ * owns the UI tree, layout, rasterisation and the frame buffer.
+ *
+ * Threading contract
+ * ------------------
+ *   * A `clover_surface*` is single-threaded: create, resize, push events and
+ *     read frames from one thread (normally the UI thread).
+ *   * `clover_direct_*` regions are the exception. They are designed so a
+ *     dedicated thread (CloverPic's paint canvas) can write pixels straight into
+ *     memory at its own refresh rate. The UI thread keeps presenting the last
+ *     committed frame until `clover_direct_commit` publishes the new one, which
+ *     is the swap-chain consistency guarantee.
+ *
+ * Pixel format
+ * ------------
+ * Frames are premultiplied BGRA8 packed in `uint32_t` (little-endian memory
+ * order B, G, R, A). This matches CloverPic's existing `RgbaFrame`.
+ */
+
+#ifndef CLOVER_PLATFORM_H
+#define CLOVER_PLATFORM_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Result codes. */
+typedef enum clover_result {
+    CLOVER_OK = 0,
+    CLOVER_NULL_ARGUMENT = 1,
+    CLOVER_PARSE_ERROR = 2,
+    CLOVER_NO_FONT = 3,
+    CLOVER_UNKNOWN_HANDLE = 4
+} clover_result;
+
+/* Pointer actions. */
+typedef enum clover_pointer_action {
+    CLOVER_POINTER_MOVE = 0,
+    CLOVER_POINTER_DOWN = 1,
+    CLOVER_POINTER_UP = 2,
+    CLOVER_POINTER_CANCEL = 3
+} clover_pointer_action;
+
+/* Modifier bits, matching CloverPic's Input::ModifierKeys. */
+enum {
+    CLOVER_MODIFIER_SHIFT = 1 << 0,
+    CLOVER_MODIFIER_CONTROL = 1 << 1,
+    CLOVER_MODIFIER_ALT = 1 << 2
+};
+
+typedef struct clover_surface clover_surface;
+
+/* A presented frame. `pixels` stays valid until the next render of this surface. */
+typedef struct clover_frame {
+    const uint32_t *pixels;
+    uint32_t width;
+    uint32_t height;
+    size_t stride;       /* in pixels, not bytes */
+    bool premultiplied;  /* always true today */
+    uint64_t generation; /* increments on every rendered frame */
+} clover_frame;
+
+typedef struct clover_stats {
+    uint32_t nodes;
+    uint32_t tiles_last_frame;
+    uint32_t width;
+    uint32_t height;
+    float scale;
+} clover_stats;
+
+/*
+ * Lifecycle
+ * ---------
+ * `width`/`height` are logical pixels; `scale` is the display scale factor
+ * (2.0 on a Retina display). Physical size is width*scale by height*scale.
+ */
+
+/* Parses `xaml_utf8` and creates a surface. Returns NULL on failure. */
+clover_surface *clover_surface_create_from_xaml(float width, float height, float scale,
+                                                const char *xaml_utf8);
+
+/* Creates a surface with an empty root panel. */
+clover_surface *clover_surface_create_empty(float width, float height, float scale);
+
+void clover_surface_destroy(clover_surface *surface);
+
+clover_result clover_surface_resize(clover_surface *surface, float width, float height, float scale);
+
+/* Renders dirty regions and copies the frame descriptor into `out`. */
+clover_result clover_surface_frame(clover_surface *surface, clover_frame *out);
+
+/* Marks the whole surface dirty. */
+clover_result clover_surface_invalidate(clover_surface *surface);
+
+clover_result clover_surface_stats(clover_surface *surface, clover_stats *out);
+
+/*
+ * Input
+ * -----
+ * `button`: 0 none, 1 left, 2 right, 3 middle.
+ * Returns the hit node id, or 0 when nothing was hit.
+ */
+uint64_t clover_surface_pointer(clover_surface *surface, float x, float y,
+                                clover_pointer_action action, uint32_t button,
+                                uint32_t modifiers);
+
+/*
+ * Direct-memory regions
+ * ---------------------
+ * Registers a child surface and returns its handle (never 0). Reference it from
+ * XAML with `<CloverSurface Id="HANDLE"/>` or from Rust with
+ * `clover_ui::node::direct_surface`.
+ */
+uint64_t clover_surface_add_direct(clover_surface *surface, uint32_t width, uint32_t height);
+
+/*
+ * Locks the back buffer and returns it for writing. The pointer remains valid
+ * until `clover_direct_commit`, which publishes the frame.
+ *
+ * `out_stride` is in pixels; `out_height` is the buffer height.
+ */
+clover_result clover_direct_begin_write(clover_surface *surface, uint64_t handle,
+                                        uint32_t **out_pixels, size_t *out_stride,
+                                        uint32_t *out_height);
+
+clover_result clover_direct_commit(clover_surface *surface, uint64_t handle);
+
+/* Registers a PNG image and returns its handle, or 0 on failure. */
+uint64_t clover_surface_add_image_png(clover_surface *surface, const char *path_utf8);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
+#endif /* CLOVER_PLATFORM_H */

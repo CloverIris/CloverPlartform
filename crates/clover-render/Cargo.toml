@@ -1,0 +1,17 @@
+[package]
+name = "clover-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "CPU rasteriser, text engine, image decoding and compositor for CloverPlatform."
+
+[dependencies]
+clover-core = { workspace = true }
+clover-ui = { workspace = true }
+fontdue = { workspace = true }
+png = { workspace = true }
+rayon = { workspace = true }
+
+[dev-dependencies]

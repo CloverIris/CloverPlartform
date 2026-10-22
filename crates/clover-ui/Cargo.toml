@@ -1,0 +1,11 @@
+[package]
+name = "clover-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Retained + declarative UI tree, layout, XAML front-end and event routing for CloverPlatform."
+
+[dependencies]
+clover-core = { workspace = true }

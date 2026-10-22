@@ -1,0 +1,324 @@
+//! Display list construction.
+//!
+//! The tree is flattened once per frame into a list of commands in **physical
+//! pixels**. Everything the rasteriser needs (shaped glyphs, decoded images) is
+//! resolved here, so tiles can be rendered later from any thread with no shared
+//! mutable state.
+
+use std::sync::Arc;
+
+use clover_core::{Align, Color, Premul, Rect, Size};
+use clover_ui::{ImageHandle, Node, SurfaceHandle, UiTree, View};
+
+use crate::canvas::ImagePixels;
+use crate::image::ImageStore;
+use crate::text::{TextEngine, TextRun};
+
+/// A resolved drawing command, all coordinates in physical pixels.
+#[derive(Clone)]
+pub enum DrawCmd {
+    RoundedRect {
+        rect: Rect,
+        radius: f32,
+        color: Premul,
+        clip: Rect,
+    },
+    Border {
+        rect: Rect,
+        radius: f32,
+        width: f32,
+        color: Premul,
+        clip: Rect,
+    },
+    Image {
+        rect: Rect,
+        image: Arc<ImagePixels>,
+        clip: Rect,
+    },
+    Text {
+        run: Arc<TextRun>,
+        color: Premul,
+        clip: Rect,
+    },
+    /// A child surface the compositor samples; the tile renderer skips it.
+    Surface {
+        rect: Rect,
+        handle: SurfaceHandle,
+        clip: Rect,
+    },
+}
+
+/// A frame's worth of resolved commands.
+pub struct DisplayList {
+    pub cmds: Vec<DrawCmd>,
+    pub width: u32,
+    pub height: u32,
+    pub scale: f32,
+}
+
+impl DisplayList {
+    pub fn is_empty(&self) -> bool {
+        self.cmds.is_empty()
+    }
+
+    /// Every surface command, for the compositor to fill in.
+    pub fn surfaces(&self) -> impl Iterator<Item = (SurfaceHandle, Rect, Rect)> + '_ {
+        self.cmds.iter().filter_map(|cmd| match cmd {
+            DrawCmd::Surface { rect, handle, clip } => Some((*handle, *rect, *clip)),
+            _ => None,
+        })
+    }
+}
+
+/// Flattens `tree` into a display list at `scale`.
+pub fn build(tree: &UiTree, scale: f32, text: &TextEngine, images: &ImageStore) -> DisplayList {
+    let scale = scale.max(0.01);
+    let width = (tree.viewport().w * scale).round().max(1.0) as u32;
+    let height = (tree.viewport().h * scale).round().max(1.0) as u32;
+    let canvas = Rect::new(0.0, 0.0, width as f32, height as f32);
+
+    let mut cmds = Vec::new();
+    walk(tree.root(), scale, canvas, &mut cmds, text, images);
+    DisplayList { cmds, width, height, scale }
+}
+
+fn walk(
+    node: &Node,
+    scale: f32,
+    clip: Rect,
+    out: &mut Vec<DrawCmd>,
+    text: &TextEngine,
+    images: &ImageStore,
+) {
+    if !node.visible {
+        return;
+    }
+    let rect = node.bounds.scale(scale);
+    if clip.is_empty() || rect.is_empty() {
+        return;
+    }
+
+    let opacity = node.style.opacity.clamp(0.0, 1.0);
+    let with_opacity = |c: Color| -> Premul {
+        if opacity >= 1.0 {
+            c.premultiply()
+        } else {
+            c.scale_alpha(opacity).premultiply()
+        }
+    };
+
+    if node.style.background.a > 0 {
+        out.push(DrawCmd::RoundedRect {
+            rect,
+            radius: node.style.radius * scale,
+            color: with_opacity(node.style.background),
+            clip,
+        });
+    }
+
+    if node.style.border_width > 0.0 && node.style.border_color.a > 0 {
+        out.push(DrawCmd::Border {
+            rect,
+            radius: node.style.radius * scale,
+            width: node.style.border_width * scale,
+            color: with_opacity(node.style.border_color),
+            clip,
+        });
+    }
+
+    match &node.view {
+        View::Text(content) => {
+            if !content.is_empty() {
+                let content_box = node.style.padding.deflate(node.bounds).scale(scale);
+                let font_px = (node.style.font_size * scale).max(1.0);
+                let line_height = text.line_height(font_px);
+                let block = text.measure(content, font_px);
+                let top = content_box.y + ((content_box.h - block.h) * 0.5).max(0.0);
+                let ascent = text.ascent(font_px);
+                for (index, line) in content.split('\n').enumerate() {
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let line_width = text.measure(line, font_px).w;
+                    let x = content_box.x + node.style.text_align.offset(content_box.w, line_width);
+                    let baseline = top + line_height * index as f32 + ascent;
+                    let run = text.shape(line, font_px, x, baseline);
+                    if !run.is_empty() {
+                        out.push(DrawCmd::Text {
+                            run: Arc::new(run),
+                            color: with_opacity(node.style.text_color),
+                            clip,
+                        });
+                    }
+                }
+            }
+        }
+        View::Image { handle, fit } => {
+            if let Some(image) = images.get(*handle) {
+                let content_box = node.style.padding.deflate(node.bounds).scale(scale);
+                let fitted = fit_rect(content_box, *fit, Size::new(image.width as f32, image.height as f32));
+                out.push(DrawCmd::Image { rect: fitted, image: Arc::clone(image), clip });
+            }
+        }
+        View::Surface { handle } => {
+            let content_box = node.style.padding.deflate(node.bounds).scale(scale);
+            out.push(DrawCmd::Surface { rect: content_box, handle: *handle, clip });
+        }
+        View::Empty => {}
+    }
+
+    let child_clip = if node.style.clip {
+        let clipped = clip.intersect(rect);
+        if clipped.is_empty() {
+            return;
+        }
+        clipped
+    } else {
+        clip
+    };
+
+    for child in &node.children {
+        walk(child, scale, child_clip, out, text, images);
+    }
+}
+
+/// Fits an image of `natural` size into `box_rect` according to `fit`.
+fn fit_rect(box_rect: Rect, fit: clover_ui::Fit, natural: Size) -> Rect {
+    use clover_ui::Fit;
+    if natural.is_empty() || box_rect.is_empty() {
+        return box_rect;
+    }
+    match fit {
+        Fit::Fill => box_rect,
+        Fit::Contain => {
+            let scale = (box_rect.w / natural.w).min(box_rect.h / natural.h);
+            let w = natural.w * scale;
+            let h = natural.h * scale;
+            Rect::new(
+                box_rect.x + (box_rect.w - w) * 0.5,
+                box_rect.y + (box_rect.h - h) * 0.5,
+                w,
+                h,
+            )
+        }
+        Fit::Cover => {
+            let scale = (box_rect.w / natural.w).max(box_rect.h / natural.h);
+            let w = natural.w * scale;
+            let h = natural.h * scale;
+            Rect::new(
+                box_rect.x + (box_rect.w - w) * 0.5,
+                box_rect.y + (box_rect.h - h) * 0.5,
+                w,
+                h,
+            )
+        }
+    }
+}
+
+/// Convenience: the image handle used by a node, if any.
+pub fn node_image(node: &Node) -> Option<ImageHandle> {
+    match &node.view {
+        View::Image { handle, .. } => Some(*handle),
+        _ => None,
+    }
+}
+
+/// Convenience: text alignment helper re-exported for skins.
+pub fn align_offset(align: Align, available: f32, extent: f32) -> f32 {
+    align.offset(available, extent)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clover_core::Edges;
+    use clover_ui::{layout::EmptyMetrics, node, style::Length, Node};
+
+    fn engine() -> TextEngine {
+        TextEngine::load_system_default().expect("a system font is required for these tests")
+    }
+
+    fn build_tree(root: Node) -> UiTree {
+        let mut tree = UiTree::new(root);
+        tree.resize(Size::new(100.0, 100.0), 2.0);
+        tree.layout(&EmptyMetrics);
+        tree
+    }
+
+    #[test]
+    fn background_becomes_a_command() {
+        let tree = build_tree(node::panel().background(Color::rgb(10, 10, 10)));
+        let list = build(&tree, 2.0, &engine(), &ImageStore::new());
+        assert_eq!(list.cmds.len(), 1);
+        match &list.cmds[0] {
+            DrawCmd::RoundedRect { rect, .. } => {
+                assert_eq!((rect.w, rect.h), (200.0, 200.0), "logical 100x100 at scale 2");
+            }
+            _ => panic!("expected a rect"),
+        }
+    }
+
+    #[test]
+    fn nested_clip_intersects_children() {
+        // A clipped 40x40 box at (10,10) holding an oversized white child: the
+        // child is clipped to the inner box, not to the outer border box.
+        let tree = build_tree(
+            node::panel().clip(true).child(
+                node::panel()
+                    .size(Length::Px(40.0), Length::Px(40.0))
+                    .margin(Edges::all(10.0))
+                    .clip(true)
+                    .child(
+                        node::panel()
+                            .size(Length::Px(200.0), Length::Px(200.0))
+                            .background(Color::WHITE),
+                    ),
+            ),
+        );
+        let list = build(&tree, 1.0, &engine(), &ImageStore::new());
+        let white = list
+            .cmds
+            .iter()
+            .find_map(|cmd| match cmd {
+                DrawCmd::RoundedRect { color, clip, .. } if *color == Color::WHITE.premultiply() => Some(*clip),
+                _ => None,
+            })
+            .expect("white rect command");
+        assert_eq!(white, Rect::new(10.0, 10.0, 40.0, 40.0));
+    }
+
+    #[test]
+    fn text_command_carries_shaped_glyphs() {
+        let tree = build_tree(node::text("Hi").font_size(20.0));
+        let list = build(&tree, 1.0, &engine(), &ImageStore::new());
+        let has_text = list.cmds.iter().any(|c| matches!(c, DrawCmd::Text { .. }));
+        assert!(has_text, "text node must produce a text command");
+        if let Some(DrawCmd::Text { run, .. }) = list.cmds.iter().find(|c| matches!(c, DrawCmd::Text { .. })) {
+            assert_eq!(run.glyphs.len(), 2);
+        }
+    }
+
+    #[test]
+    fn surface_command_is_reported() {
+        let tree = build_tree(node::direct_surface(SurfaceHandle(9)));
+        let list = build(&tree, 1.0, &engine(), &ImageStore::new());
+        let surfaces: Vec<_> = list.surfaces().collect();
+        assert_eq!(surfaces.len(), 1);
+        assert_eq!(surfaces[0].0, SurfaceHandle(9));
+    }
+
+    #[test]
+    fn hidden_nodes_produce_nothing() {
+        let tree = build_tree(node::panel().background(Color::WHITE).visible(false));
+        let list = build(&tree, 1.0, &engine(), &ImageStore::new());
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn fit_contain_preserves_aspect() {
+        let fitted = fit_rect(Rect::new(0.0, 0.0, 100.0, 100.0), clover_ui::Fit::Contain, Size::new(50.0, 25.0));
+        assert_eq!(fitted.w, 100.0);
+        assert_eq!(fitted.h, 50.0);
+        assert_eq!(fitted.y, 25.0);
+    }
+}

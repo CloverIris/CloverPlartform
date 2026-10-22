@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/clover-core",
+    "crates/clover-ui",
+    "crates/clover-render",
+    "crates/clover-abi",
+    "crates/clover-demo",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["CloverIris"]
+repository = "https://github.com/CloverIris/CloverPlartform"
+
+[workspace.dependencies]
+clover-core = { path = "crates/clover-core" }
+clover-ui = { path = "crates/clover-ui" }
+clover-render = { path = "crates/clover-render" }
+fontdue = "0.9"
+png = "0.17"
+rayon = "1.10"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 1

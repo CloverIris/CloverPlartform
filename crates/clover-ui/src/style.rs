@@ -1,0 +1,189 @@
+//! Layout and appearance description.
+//!
+//! `Style` is deliberately a plain data struct: it is what XAML attributes parse
+//! into, what the declarative builders fill in, and what the layout engine reads.
+//! Both authoring modes therefore land on the same representation instead of
+//! needing two parallel layout paths.
+
+use clover_core::{Align, Color, Edges, Orientation};
+
+/// A resolved-able length.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Length {
+    /// Size to content.
+    Auto,
+    /// Logical pixels.
+    Px(f32),
+    /// Fraction of the parent's available extent, `0.0..=1.0`.
+    Percent(f32),
+}
+
+impl Default for Length {
+    fn default() -> Self {
+        Length::Auto
+    }
+}
+
+impl Length {
+    /// Resolves against the available extent, or `None` when it depends on
+    /// content.
+    pub fn resolve(self, available: f32) -> Option<f32> {
+        match self {
+            Length::Auto => None,
+            Length::Px(v) => Some(v.max(0.0)),
+            Length::Percent(p) => Some((available * p.clamp(0.0, 1.0)).max(0.0)),
+        }
+    }
+
+    /// Parses `"Auto"`, `"120"`, `"120px"`, `"50%"`.
+    pub fn parse(text: &str) -> Option<Length> {
+        let text = text.trim();
+        if text.eq_ignore_ascii_case("auto") {
+            return Some(Length::Auto);
+        }
+        if let Some(percent) = text.strip_suffix('%') {
+            return percent.trim().parse::<f32>().ok().map(|v| Length::Percent(v / 100.0));
+        }
+        let numeric = text.strip_suffix("px").unwrap_or(text).trim();
+        numeric.parse::<f32>().ok().map(Length::Px)
+    }
+}
+
+/// How an image is fitted into its box.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Fit {
+    /// Fill the box, ignoring aspect ratio.
+    #[default]
+    Fill,
+    /// Contain, preserving aspect ratio (letterboxed).
+    Contain,
+    /// Cover, preserving aspect ratio (cropped).
+    Cover,
+}
+
+/// Interaction state that skins can react to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NodeState {
+    pub hovered: bool,
+    pub pressed: bool,
+    pub focused: bool,
+    pub disabled: bool,
+}
+
+/// Everything the layout engine and rasteriser need to know about a node.
+#[derive(Clone, Debug)]
+pub struct Style {
+    pub width: Length,
+    pub height: Length,
+    pub min_width: Option<f32>,
+    pub max_width: Option<f32>,
+    pub min_height: Option<f32>,
+    pub max_height: Option<f32>,
+
+    pub margin: Edges,
+    pub padding: Edges,
+
+    /// Child flow direction for containers.
+    pub direction: Orientation,
+    /// Main-axis gap between children.
+    pub gap: f32,
+    /// Cross-axis alignment of children.
+    pub align: Align,
+    /// Main-axis distribution of children.
+    pub justify: Align,
+
+    pub background: Color,
+    pub radius: f32,
+    pub border_width: f32,
+    pub border_color: Color,
+
+    pub font_size: f32,
+    pub text_color: Color,
+    /// Text alignment inside the node's content box.
+    pub text_align: Align,
+
+    pub opacity: f32,
+    /// Clip children to this node's bounds.
+    pub clip: bool,
+}
+
+impl Default for Style {
+    fn default() -> Self {
+        Self {
+            width: Length::Auto,
+            height: Length::Auto,
+            min_width: None,
+            max_width: None,
+            min_height: None,
+            max_height: None,
+            margin: Edges::ZERO,
+            padding: Edges::ZERO,
+            direction: Orientation::Vertical,
+            gap: 0.0,
+            align: Align::Stretch,
+            justify: Align::Start,
+            background: Color::TRANSPARENT,
+            radius: 0.0,
+            border_width: 0.0,
+            border_color: Color::TRANSPARENT,
+            font_size: 14.0,
+            text_color: Color::rgb(0xE8, 0xEA, 0xED),
+            text_align: Align::Start,
+            opacity: 1.0,
+            clip: false,
+        }
+    }
+}
+
+impl Style {
+    /// Applies min/max constraints to a measured extent.
+    pub fn clamp_width(&self, value: f32) -> f32 {
+        let mut v = value;
+        if let Some(min) = self.min_width {
+            v = v.max(min);
+        }
+        if let Some(max) = self.max_width {
+            v = v.min(max);
+        }
+        v
+    }
+
+    pub fn clamp_height(&self, value: f32) -> f32 {
+        let mut v = value;
+        if let Some(min) = self.min_height {
+            v = v.max(min);
+        }
+        if let Some(max) = self.max_height {
+            v = v.min(max);
+        }
+        v
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_lengths() {
+        assert_eq!(Length::parse("Auto"), Some(Length::Auto));
+        assert_eq!(Length::parse("120"), Some(Length::Px(120.0)));
+        assert_eq!(Length::parse("120px"), Some(Length::Px(120.0)));
+        assert_eq!(Length::parse("50%"), Some(Length::Percent(0.5)));
+        assert_eq!(Length::parse("nope"), None);
+    }
+
+    #[test]
+    fn resolves_lengths() {
+        assert_eq!(Length::Px(10.0).resolve(100.0), Some(10.0));
+        assert_eq!(Length::Percent(0.25).resolve(100.0), Some(25.0));
+        assert_eq!(Length::Auto.resolve(100.0), None);
+    }
+
+    #[test]
+    fn clamps_respect_bounds() {
+        let style = Style { min_width: Some(50.0), max_width: Some(80.0), ..Style::default() };
+        assert_eq!(style.clamp_width(10.0), 50.0);
+        assert_eq!(style.clamp_width(200.0), 80.0);
+    }
+}

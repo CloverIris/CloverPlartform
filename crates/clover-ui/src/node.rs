@@ -1,0 +1,589 @@
+//! The node tree and its two authoring modes.
+//!
+//! There is exactly **one** tree representation. XAML, the declarative builders
+//! and direct retained-mode mutation all produce the same [`Node`], which is what
+//! makes mixing them inside a single layout possible:
+//!
+//! * [`NodeMode::Retained`] — the host owns this node and mutates it in place
+//!   through its id (what CloverPic's editor chrome wants).
+//! * [`NodeMode::Declarative`] — the node's children are regenerated from a
+//!   builder whenever the mount point is invalidated (what Compose/Flutter style
+//!   code wants).
+//!
+//! The mode is per-node, not per-tree, so a declarative toolbar can sit inside a
+//! retained shell and a retained canvas can sit inside a declarative page.
+
+use clover_core::{Align, Color, Edges, Orientation, Point, Rect, Size};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::style::{Fit, Length, NodeState, Style};
+
+static NEXT_NODE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_node_id() -> u64 {
+    NEXT_NODE_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Stable identity of a node inside one tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct NodeId(pub u64);
+
+/// Handle into the tree's image registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ImageHandle(pub u64);
+
+/// Handle into the tree's direct-memory surface registry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SurfaceHandle(pub u64);
+
+/// How a node's children are produced.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NodeMode {
+    /// Host-owned, mutated in place by id.
+    #[default]
+    Retained,
+    /// Rebuilt from a builder registered on the tree's mount point.
+    Declarative,
+}
+
+/// What a node draws.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum View {
+    /// Container or plain background rectangle.
+    #[default]
+    Empty,
+    /// Single-line text, using the node's font size and text colour.
+    Text(String),
+    /// A decoded image fitted into the node's content box.
+    Image { handle: ImageHandle, fit: Fit },
+    /// A child surface whose pixels are written by another thread.
+    Surface { handle: SurfaceHandle },
+}
+
+/// One node of the UI tree.
+#[derive(Clone, Debug)]
+pub struct Node {
+    pub id: NodeId,
+    /// Stable identity across rebuilds; lets reconciliation keep state.
+    pub key: Option<String>,
+    /// `x:Name` from XAML, the handle retained-mode code looks up.
+    pub name: Option<String>,
+    pub mode: NodeMode,
+    pub style: Style,
+    pub view: View,
+    pub children: Vec<Node>,
+    /// Filled in by the layout pass.
+    pub bounds: Rect,
+    pub state: NodeState,
+    pub visible: bool,
+}
+
+impl Default for Node {
+    fn default() -> Self {
+        Self {
+            id: NodeId(0),
+            key: None,
+            name: None,
+            mode: NodeMode::Retained,
+            style: Style::default(),
+            view: View::Empty,
+            children: Vec::new(),
+            bounds: Rect::ZERO,
+            state: NodeState::default(),
+            visible: true,
+        }
+    }
+}
+
+impl Node {
+    /// A node with a fresh identity.
+    pub fn new() -> Self {
+        Self { id: NodeId(next_node_id()), ..Self::default() }
+    }
+
+    fn with_view(view: View) -> Self {
+        Self { view, ..Self::new() }
+    }
+
+    // ---- authoring -----------------------------------------------------
+
+    pub fn child(mut self, child: Node) -> Self {
+        self.children.push(child);
+        self
+    }
+
+    pub fn children_of(mut self, children: impl IntoIterator<Item = Node>) -> Self {
+        self.children.extend(children);
+        self
+    }
+
+    pub fn key(mut self, key: impl Into<String>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    pub fn mode(mut self, mode: NodeMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub fn width(mut self, width: Length) -> Self {
+        self.style.width = width;
+        self
+    }
+
+    pub fn height(mut self, height: Length) -> Self {
+        self.style.height = height;
+        self
+    }
+
+    pub fn size(mut self, w: Length, h: Length) -> Self {
+        self.style.width = w;
+        self.style.height = h;
+        self
+    }
+
+    pub fn min_size(mut self, w: Option<f32>, h: Option<f32>) -> Self {
+        self.style.min_width = w;
+        self.style.min_height = h;
+        self
+    }
+
+    pub fn max_size(mut self, w: Option<f32>, h: Option<f32>) -> Self {
+        self.style.max_width = w;
+        self.style.max_height = h;
+        self
+    }
+
+    pub fn padding(mut self, padding: Edges) -> Self {
+        self.style.padding = padding;
+        self
+    }
+
+    pub fn margin(mut self, margin: Edges) -> Self {
+        self.style.margin = margin;
+        self
+    }
+
+    pub fn gap(mut self, gap: f32) -> Self {
+        self.style.gap = gap;
+        self
+    }
+
+    pub fn direction(mut self, direction: Orientation) -> Self {
+        self.style.direction = direction;
+        self
+    }
+
+    pub fn align(mut self, align: Align) -> Self {
+        self.style.align = align;
+        self
+    }
+
+    pub fn justify(mut self, justify: Align) -> Self {
+        self.style.justify = justify;
+        self
+    }
+
+    pub fn background(mut self, color: Color) -> Self {
+        self.style.background = color;
+        self
+    }
+
+    pub fn radius(mut self, radius: f32) -> Self {
+        self.style.radius = radius;
+        self
+    }
+
+    pub fn border(mut self, width: f32, color: Color) -> Self {
+        self.style.border_width = width;
+        self.style.border_color = color;
+        self
+    }
+
+    pub fn font_size(mut self, size: f32) -> Self {
+        self.style.font_size = size;
+        self
+    }
+
+    pub fn text_color(mut self, color: Color) -> Self {
+        self.style.text_color = color;
+        self
+    }
+
+    pub fn text_align(mut self, align: Align) -> Self {
+        self.style.text_align = align;
+        self
+    }
+
+    pub fn opacity(mut self, opacity: f32) -> Self {
+        self.style.opacity = opacity;
+        self
+    }
+
+    pub fn clip(mut self, clip: bool) -> Self {
+        self.style.clip = clip;
+        self
+    }
+
+    pub fn visible(mut self, visible: bool) -> Self {
+        self.visible = visible;
+        self
+    }
+
+    // ---- queries -------------------------------------------------------
+
+    /// Depth-first search by id.
+    pub fn find(&self, id: NodeId) -> Option<&Node> {
+        if self.id == id {
+            return Some(self);
+        }
+        for child in &self.children {
+            if let Some(found) = child.find(id) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Depth-first search by id.
+    pub fn find_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+        if self.id == id {
+            return Some(self);
+        }
+        for child in &mut self.children {
+            if let Some(found) = child.find_mut(id) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Depth-first search by `x:Name`.
+    pub fn find_named(&self, name: &str) -> Option<&Node> {
+        if self.name.as_deref() == Some(name) {
+            return Some(self);
+        }
+        for child in &self.children {
+            if let Some(found) = child.find_named(name) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    pub fn find_named_mut(&mut self, name: &str) -> Option<&mut Node> {
+        if self.name.as_deref() == Some(name) {
+            return Some(self);
+        }
+        for child in &mut self.children {
+            if let Some(found) = child.find_named_mut(name) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Visits every node depth-first, parents before children.
+    pub fn walk(&self, visit: &mut dyn FnMut(&Node)) {
+        visit(self);
+        for child in &self.children {
+            child.walk(visit);
+        }
+    }
+
+    /// Counts nodes in the subtree, including `self`.
+    pub fn count(&self) -> usize {
+        1 + self.children.iter().map(Node::count).sum::<usize>()
+    }
+
+    /// Assigns fresh identities to the whole subtree.
+    ///
+    /// Used when a declarative builder hands back a tree that was not produced by
+    /// reconciliation, so ids never collide with live nodes.
+    pub fn reidentify(&mut self) {
+        self.id = NodeId(next_node_id());
+        for child in &mut self.children {
+            child.reidentify();
+        }
+    }
+
+    /// Ancestor chain containing `point`, ordered deepest first.
+    pub fn hit_chain(&self, point: Point) -> Vec<NodeId> {
+        let mut chain = Vec::new();
+        self.hit_chain_into(point, &mut chain);
+        // `hit_chain_into` pushes the hit node before its ancestors, so the
+        // vector already runs deepest-first.
+        chain
+    }
+
+    fn hit_chain_into(&self, point: Point, out: &mut Vec<NodeId>) -> bool {
+        if !self.visible || !self.bounds.contains(point) {
+            return false;
+        }
+        // Later children paint on top, so test them first.
+        for child in self.children.iter().rev() {
+            if child.hit_chain_into(point, out) {
+                out.push(self.id);
+                return true;
+            }
+        }
+        out.push(self.id);
+        true
+    }
+
+    /// Walks the subtree and marks `hovered` for ids in `hovered`.
+    pub fn apply_hover(&mut self, hovered: Option<NodeId>) {
+        self.state.hovered = hovered == Some(self.id);
+        for child in &mut self.children {
+            child.apply_hover(hovered);
+        }
+    }
+
+    /// Collects the bounds of every node whose state changed, for damage.
+    pub fn collect_changed_bounds(&self, out: &mut Vec<Rect>) {
+        let _ = out;
+    }
+}
+
+// ---- declarative constructors -----------------------------------------
+
+/// A vertical stack container.
+pub fn column() -> Node {
+    Node::new().direction(Orientation::Vertical)
+}
+
+/// A horizontal stack container.
+pub fn row() -> Node {
+    Node::new().direction(Orientation::Horizontal)
+}
+
+/// A stack with an explicit direction.
+pub fn stack(direction: Orientation) -> Node {
+    Node::new().direction(direction)
+}
+
+/// A plain panel, useful as a positioned box.
+pub fn panel() -> Node {
+    Node::new()
+}
+
+/// Single-line text.
+pub fn text(content: impl Into<String>) -> Node {
+    Node::with_view(View::Text(content.into()))
+}
+
+/// A button-looking container holding a label.
+pub fn button(label: impl Into<String>) -> Node {
+    let label = label.into();
+    let mut node = Node::with_view(View::Text(label.clone()))
+        .padding(Edges::symmetric(14.0, 8.0))
+        .radius(6.0)
+        .background(Color::rgb(0x38, 0x3E, 0x46))
+        .border(1.0, Color::rgb(0x60, 0x68, 0x74))
+        .text_align(Align::Center);
+    node.key = Some(format!("button:{label}"));
+    node
+}
+
+/// An image drawn from the tree's image registry.
+pub fn image(handle: ImageHandle) -> Node {
+    Node::with_view(View::Image { handle, fit: Fit::Contain })
+}
+
+/// A child surface whose pixels another thread writes directly.
+pub fn direct_surface(handle: SurfaceHandle) -> Node {
+    Node::with_view(View::Surface { handle })
+}
+
+// ---- tree --------------------------------------------------------------
+
+/// Builder registered for a declarative mount point.
+type MountBuilder = Box<dyn FnMut() -> Node + Send>;
+
+/// The UI tree: root node, name index, mount points and dirty bookkeeping.
+pub struct UiTree {
+    root: Node,
+    viewport: Size,
+    scale: f32,
+    mounts: HashMap<NodeId, MountBuilder>,
+    invalidated: Vec<NodeId>,
+    damage: clover_core::Damage,
+}
+
+impl UiTree {
+    pub fn new(root: Node) -> Self {
+        Self {
+            root,
+            viewport: Size::ZERO,
+            scale: 1.0,
+            mounts: HashMap::new(),
+            invalidated: Vec::new(),
+            damage: clover_core::Damage::new(),
+        }
+    }
+
+    pub fn root(&self) -> &Node {
+        &self.root
+    }
+
+    pub fn root_mut(&mut self) -> &mut Node {
+        &mut self.root
+    }
+
+    pub fn viewport(&self) -> Size {
+        self.viewport
+    }
+
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    pub fn damage(&mut self) -> &mut clover_core::Damage {
+        &mut self.damage
+    }
+
+    /// Resizes the surface; everything becomes dirty.
+    pub fn resize(&mut self, viewport: Size, scale: f32) {
+        if self.viewport == viewport && (self.scale - scale).abs() < f32::EPSILON {
+            return;
+        }
+        self.viewport = viewport;
+        self.scale = scale.max(0.01);
+        self.damage.mark_full();
+    }
+
+    /// Finds a node by id.
+    pub fn node(&self, id: NodeId) -> Option<&Node> {
+        self.root.find(id)
+    }
+
+    /// Finds a node by id, mutably.
+    pub fn node_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+        self.root.find_mut(id)
+    }
+
+    /// Finds a node by `x:Name`.
+    pub fn named(&self, name: &str) -> Option<&Node> {
+        self.root.find_named(name)
+    }
+
+    /// Finds a node by `x:Name`, mutably. The caller is responsible for
+    /// invalidating the affected region.
+    pub fn named_mut(&mut self, name: &str) -> Option<&mut Node> {
+        self.root.find_named_mut(name)
+    }
+
+    /// Registers a declarative subtree.
+    ///
+    /// The mount point is a normal node that hosts whatever `builder` returns, so
+    /// retained siblings and declarative subtrees can be mixed freely. Returns
+    /// the mount point's id.
+    pub fn mount(&mut self, parent: NodeId, key: &str, mut builder: MountBuilder) -> NodeId {
+        let mount_id = NodeId(next_node_id());
+        let built = builder();
+        let mut mount_node = Node::new();
+        mount_node.id = mount_id;
+        mount_node.key = Some(format!("mount:{key}"));
+        mount_node.mode = NodeMode::Declarative;
+        mount_node.style.clip = true;
+        mount_node.children = built.children;
+
+        let parent_node = self.root.find_mut(parent);
+        match parent_node {
+            Some(node) => node.children.push(mount_node),
+            None => self.root.children.push(mount_node),
+        }
+        self.mounts.insert(mount_id, builder);
+        self.damage.mark_full();
+        mount_id
+    }
+
+    /// Schedules a declarative subtree for rebuild on the next [`Self::flush`].
+    pub fn invalidate_mount(&mut self, mount: NodeId) {
+        self.invalidated.push(mount);
+    }
+
+    /// Rebuilds every invalidated declarative subtree, reusing ids by `key`.
+    ///
+    /// Returns `true` when anything actually changed.
+    pub fn flush(&mut self) -> bool {
+        if self.invalidated.is_empty() {
+            return false;
+        }
+        let pending: Vec<NodeId> = self.invalidated.drain(..).collect();
+        let mut changed = false;
+        for mount_id in pending {
+            let Some(builder) = self.mounts.get_mut(&mount_id) else { continue };
+            let built = builder();
+            let Some(node) = self.root.find_mut(mount_id) else { continue };
+            let old_children = std::mem::take(&mut node.children);
+            node.children = reconcile(old_children, built.children);
+            changed = true;
+        }
+        if changed {
+            self.damage.mark_full();
+        }
+        changed
+    }
+
+    /// Runs the layout pass for the current viewport.
+    pub fn layout(&mut self, metrics: &dyn crate::layout::LayoutMetrics) {
+        crate::layout::layout(&mut self.root, self.viewport, metrics);
+        self.damage.add(self.root.bounds);
+    }
+
+    /// Hit-tests `point` and returns the node chain from deepest to root.
+    pub fn hit_chain(&self, point: Point) -> Vec<NodeId> {
+        self.root.hit_chain(point)
+    }
+
+    /// Updates hover state, damaging the nodes whose state changed.
+    pub fn update_hover(&mut self, point: Option<Point>) {
+        let hovered = point.and_then(|p| self.hit_chain(p).first().copied());
+        let mut changed: Vec<Rect> = Vec::new();
+        apply_hover_recursive(&mut self.root, hovered, &mut changed);
+        for rect in changed {
+            self.damage.add(rect);
+        }
+    }
+}
+
+fn apply_hover_recursive(node: &mut Node, hovered: Option<NodeId>, changed: &mut Vec<Rect>) {
+    let now = hovered == Some(node.id);
+    if now != node.state.hovered {
+        node.state.hovered = now;
+        changed.push(node.bounds);
+    }
+    for child in &mut node.children {
+        apply_hover_recursive(child, hovered, changed);
+    }
+}
+
+/// Replaces `old` children with `fresh`, keeping ids where keys match.
+fn reconcile(old: Vec<Node>, fresh: Vec<Node>) -> Vec<Node> {
+    use std::collections::HashMap;
+    let mut by_key: HashMap<String, Node> =
+        old.into_iter().filter_map(|n| n.key.clone().map(|k| (k, n))).collect();
+
+    fresh
+        .into_iter()
+        .map(|mut new_node| {
+            if let Some(key) = new_node.key.clone() {
+                if let Some(mut existing) = by_key.remove(&key) {
+                    new_node.id = existing.id;
+                    new_node.state = existing.state;
+                    let old_children = std::mem::take(&mut existing.children);
+                    new_node.children = reconcile(old_children, new_node.children);
+                }
+            }
+            new_node
+        })
+        .collect()
+}

@@ -1,0 +1,16 @@
+[package]
+name = "clover-abi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "C ABI surface for embedding CloverPlatform in native hosts."
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+clover-core = { workspace = true }
+clover-ui = { workspace = true }
+clover-render = { workspace = true }
