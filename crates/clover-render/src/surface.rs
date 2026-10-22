@@ -203,6 +203,13 @@ impl Surface {
         self.tree.damage().mark_full();
     }
 
+    /// Replaces the UI tree and schedules a full repaint.
+    pub fn set_root(&mut self, root: Node) {
+        self.tree.set_root(root);
+        self.pending_actions.clear();
+        self.press_action = None;
+    }
+
     /// Registers a direct-memory child surface.
     pub fn register_direct(&mut self, handle: SurfaceHandle, surface: Arc<DirectSurface>) {
         self.direct.insert(handle, surface);

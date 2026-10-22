@@ -118,6 +118,48 @@ pub unsafe extern "C" fn clover_surface_create_from_xaml_with_styles(
     create(root, width, height, scale)
 }
 
+/// Replaces a surface's UI tree with a freshly parsed page.
+///
+/// `styles_utf8` may be null when the page needs no stylesheet. Focus, press
+/// state and the action queue are reset, because they refer to node ids that no
+/// longer exist.
+///
+/// # Safety
+/// Both pointers must be null or NUL-terminated UTF-8 strings.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_set_root_xaml(
+    surface: *mut CloverSurface,
+    xaml_utf8: *const c_char,
+    styles_utf8: *const c_char,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if xaml_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let Ok(source) = CStr::from_ptr(xaml_utf8).to_str() else {
+        return CloverResult::ParseError;
+    };
+    let root = if styles_utf8.is_null() {
+        match xaml::parse(source, &xaml::NoImages) {
+            Ok(root) => root,
+            Err(_) => return CloverResult::ParseError,
+        }
+    } else {
+        let Ok(styles) = CStr::from_ptr(styles_utf8).to_str() else {
+            return CloverResult::ParseError;
+        };
+        let Ok(sheet) = xaml::parse_stylesheet(styles) else {
+            return CloverResult::ParseError;
+        };
+        match xaml::parse_with_styles(source, &xaml::NoImages, &sheet) {
+            Ok(root) => root,
+            Err(_) => return CloverResult::ParseError,
+        }
+    };
+    surface.surface.set_root(root);
+    CloverResult::Ok
+}
+
 /// Creates a surface from a tree built in Rust and handed over.
 #[no_mangle]
 pub extern "C" fn clover_surface_create_empty(width: f32, height: f32, scale: f32) -> *mut CloverSurface {

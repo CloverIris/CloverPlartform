@@ -76,7 +76,31 @@ clover_direct_commit(surface, handle);
 `begin_write`/`commit` swap buffers: the UI thread keeps presenting the previous
 frame until the commit, so the canvas can run at its own rate without tearing.
 
-## 5. Guard rails found the hard way
+## 5. Driving an existing state machine
+
+CloverPic's Program Manager runs in two presentation modes. Both drive the same
+`Core::ProjectManagerRuntime`; only the drawing differs.
+
+```objc
+// Build a page from the data core already owns.
+std::string xaml = BuildPage(LoadRecentProjects());
+surface = clover_surface_create_from_xaml_with_styles(w, h, scale, xaml, styles);
+
+// Drain what the user asked for, hand it to core.
+char buffer[1024];
+while (clover_surface_take_action(surface, buffer, sizeof buffer) > 0) {
+    if (strcmp(buffer, "new:1600x1000") == 0)
+        host.HandleProgramManagerCommand(Core::AppCommand::CreateCanvasPreset,
+                                         Core::PackCanvasPreset(1600, 1000));
+}
+```
+
+The only core change this needed was a public `HandleCommand` on the runtime:
+the framework decides *when* something happened, core decides *what it means*.
+When the data changes, `clover_surface_set_root_xaml` swaps the tree; focus and
+press state reset because node ids are new.
+
+## 6. Guard rails found the hard way
 
 * **Damage is logical; the rasteriser is physical.** `Surface` converts before
   handing damage to the renderer. A host that tracks its own damage must do the

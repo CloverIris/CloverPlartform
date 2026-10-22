@@ -552,6 +552,19 @@ impl UiTree {
         &mut self.root
     }
 
+    /// Replaces the whole tree.
+    ///
+    /// Focus, press and mount state all refer to the old node ids, so they are
+    /// cleared. The host is expected to rebuild the tree when its data changes.
+    pub fn set_root(&mut self, root: Node) {
+        self.root = root;
+        self.focus = None;
+        self.pressed = None;
+        self.mounts.clear();
+        self.invalidated.clear();
+        self.damage.mark_full();
+    }
+
     pub fn viewport(&self) -> Size {
         self.viewport
     }

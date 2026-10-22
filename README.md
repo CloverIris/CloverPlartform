@@ -14,7 +14,12 @@ One page, two stylesheets — no colour appears in the markup:
 ![Dark theme](docs/theme-dark.png)
 ![Light theme](docs/theme-light.png)
 
-> Status: **0.5 — actions**. The pipeline works end to end (tree →
+And this is CloverPic's Program Manager, drawn by CloverPlatform instead of the
+core-drawn scene. The buttons raise commands; core still owns the state machine.
+
+![CloverPic Program Manager rendered by CloverPlatform](docs/program-manager.png)
+
+> Status: **0.6 — hosted by CloverPic**. The pipeline works end to end (tree →
 > layout → display list → tile-parallel raster → frame), both authoring
 > front-ends produce the same tree, layout supports flex-style `Fill`, text
 > wraps, and keyboard focus is routed. Styles, templates, bindings and animation

@@ -110,6 +110,13 @@ clover_surface *clover_surface_create_from_xaml_with_styles(float width, float h
                                                             const char *xaml_utf8,
                                                             const char *styles_utf8);
 
+/*
+ * Replaces the UI tree with a freshly parsed page. `styles_utf8` may be NULL.
+ * Focus, press state and the action queue are reset because node ids change.
+ */
+clover_result clover_surface_set_root_xaml(clover_surface *surface, const char *xaml_utf8,
+                                           const char *styles_utf8);
+
 /* Creates a surface with an empty root panel. */
 clover_surface *clover_surface_create_empty(float width, float height, float scale);
 
