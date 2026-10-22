@@ -308,6 +308,12 @@ impl Node {
         self
     }
 
+    /// Lets pointer hits pass through this box to whatever is underneath.
+    pub fn hit_test(mut self, visible: bool) -> Self {
+        self.style.hit_test_visible = visible;
+        self
+    }
+
     /// Places this node absolutely, outside the parent's flow.
     pub fn position(mut self, x: f32, y: f32) -> Self {
         self.style.position = Some(clover_core::Point::new(x, y));
@@ -588,11 +594,7 @@ impl Node {
 
     /// Ancestor chain containing `point`, ordered deepest first.
     pub fn hit_chain(&self, point: Point) -> Vec<NodeId> {
-        let mut chain = Vec::new();
-        self.hit_chain_into(point, &mut chain);
-        // `hit_chain_into` pushes the hit node before its ancestors, so the
-        // vector already runs deepest-first.
-        chain
+        hit_chain_in(self, point)
     }
 
     fn hit_chain_into(&self, point: Point, out: &mut Vec<NodeId>) -> bool {
@@ -605,6 +607,9 @@ impl Node {
                 out.push(self.id);
                 return true;
             }
+        }
+        if !self.style.hit_test_visible {
+            return false;
         }
         out.push(self.id);
         true
@@ -621,6 +626,16 @@ impl Node {
     /// Collects the bounds of every node whose state changed, for damage.
     pub fn collect_changed_bounds(&self, out: &mut Vec<Rect>) {
         let _ = out;
+    }
+}
+
+/// Hit-tests one subtree, deepest node first.
+fn hit_chain_in(node: &Node, point: Point) -> Vec<NodeId> {
+    let mut chain = Vec::new();
+    if node.hit_chain_into(point, &mut chain) {
+        chain
+    } else {
+        Vec::new()
     }
 }
 
@@ -704,6 +719,11 @@ pub struct UiTree {
     pressed: Option<NodeId>,
     /// Set when geometry must be recomputed; cleared after the layout pass.
     layout_dirty: bool,
+    /// Drawn after the main tree and hit-tested before it.
+    ///
+    /// Popups need to escape their parent's clip and stacking order, which is
+    /// exactly what a second root gives them.
+    overlay: Option<Box<Node>>,
 }
 
 impl UiTree {
@@ -718,6 +738,7 @@ impl UiTree {
             focus: None,
             pressed: None,
             layout_dirty: true,
+            overlay: None,
         }
     }
 
@@ -957,6 +978,9 @@ impl UiTree {
             return;
         }
         crate::layout::layout(&mut self.root, self.viewport, metrics);
+        if let Some(overlay) = self.overlay.as_mut() {
+            crate::layout::layout(overlay, self.viewport, metrics);
+        }
         self.layout_dirty = false;
         // Geometry moved, so everything on screen may have moved with it.
         self.damage.mark_full();
@@ -973,6 +997,30 @@ impl UiTree {
         self.root.find_drag_ancestor(id)
     }
 
+    /// Replaces the overlay root. Pass `None` to remove it.
+    pub fn set_overlay(&mut self, overlay: Option<Node>) {
+        self.overlay = overlay.map(Box::new);
+        self.layout_dirty = true;
+        self.damage.mark_full();
+    }
+
+    pub fn overlay(&self) -> Option<&Node> {
+        self.overlay.as_deref()
+    }
+
+    /// Cursor requested by the deepest node under `point` that asks for one.
+    pub fn cursor_at(&self, point: Point) -> crate::style::Cursor {
+        let chain = self.hit_chain(point);
+        for id in chain {
+            if let Some(node) = self.node(id) {
+                if node.style.cursor != crate::style::Cursor::Default {
+                    return node.style.cursor;
+                }
+            }
+        }
+        crate::style::Cursor::Default
+    }
+
     pub fn invalidate_layout(&mut self) {
         self.layout_dirty = true;
     }
@@ -984,7 +1032,13 @@ impl UiTree {
 
     /// Hit-tests `point` and returns the node chain from deepest to root.
     pub fn hit_chain(&self, point: Point) -> Vec<NodeId> {
-        self.root.hit_chain(point)
+        if let Some(overlay) = &self.overlay {
+            let chain = hit_chain_in(overlay, point);
+            if !chain.is_empty() {
+                return chain;
+            }
+        }
+        hit_chain_in(&self.root, point)
     }
 
     /// Updates hover state, damaging the nodes whose state changed.
@@ -992,6 +1046,9 @@ impl UiTree {
         let hovered = point.and_then(|p| self.hit_chain(p).first().copied());
         let mut changed: Vec<Rect> = Vec::new();
         apply_hover_recursive(&mut self.root, hovered, &mut changed);
+        if let Some(overlay) = self.overlay.as_mut() {
+            apply_hover_recursive(overlay, hovered, &mut changed);
+        }
         for rect in changed {
             self.damage.add(rect);
         }

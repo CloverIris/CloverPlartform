@@ -162,6 +162,21 @@ Today `hdr_raster` is false, so an HDR request lands on `Bgra8Sdr` with
 silent one — the whole point of recording the reason is that a host can surface
 it and a future float raster path only has to flip one flag.
 
+## 5c1. Overlay
+
+Popups cannot live in the page tree: a dropdown opened from a toolbar button would
+be clipped by the toolbar, and stacking would be decided by declaration order
+rather than by "this is on top".
+
+So a document may declare `<Overlay>`, built as a second root. It paints after the
+page and is hit-tested before it, so a hit inside the overlay never reaches the
+page beneath.
+
+The overlay root itself spans the viewport but is marked `hit_test_visible =
+false`: it paints nothing and takes no hits, so a click beside the menu still
+reaches the page. Only the elements declared inside it take input. `IsHitTestVisible`
+exposes the same flag for ordinary nodes.
+
 ## 5c2. Absolute positioning and drag
 
 Two capabilities were added because the CloverPic workspace cannot be expressed

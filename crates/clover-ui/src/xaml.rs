@@ -258,6 +258,8 @@ pub struct UiDocument {
     /// `(key, relative path)` pairs from `<Resources>`.
     resources: Vec<(String, String)>,
     root: XmlNode,
+    /// Optional overlay root, painted above the page.
+    overlay: Option<XmlNode>,
     source: String,
 }
 
@@ -273,6 +275,7 @@ impl UiDocument {
         let mut sheet = crate::style_sheet::StyleSheet::new();
         let mut resources: Vec<(String, String)> = Vec::new();
         let mut root: Option<XmlNode> = None;
+        let mut overlay: Option<XmlNode> = None;
 
         for child in &document.children {
             let name = child.name.to_ascii_lowercase();
@@ -305,6 +308,18 @@ impl UiDocument {
                 }
             } else if name == "styles" {
                 sheet.merge(parse_styles_node(child)?);
+            } else if name == "overlay" {
+                if overlay.is_some() {
+                    return err(child.offset, "only one <Overlay> is allowed");
+                }
+                let mut entries = child.children.iter();
+                let Some(inner) = entries.next() else {
+                    return err(child.offset, "<Overlay> needs a single root element");
+                };
+                if entries.next().is_some() {
+                    return err(child.offset, "<Overlay> takes exactly one root element");
+                }
+                overlay = Some(inner.clone());
             } else if name == "resources" {
                 for entry in &child.children {
                     if !entry.name.eq_ignore_ascii_case("Image") {
@@ -326,7 +341,7 @@ impl UiDocument {
         let Some(root) = root else {
             return err(document.offset, "a .cui document needs a page root");
         };
-        Ok(Self { data, sheet, resources, root, source: source.to_string() })
+        Ok(Self { data, sheet, resources, root, overlay, source: source.to_string() })
     }
 
     /// Reads and parses a `.cui` file.
@@ -363,6 +378,26 @@ impl UiDocument {
         let data = self.data.merged(overrides);
         let context = BuildContext { images, sheet: &self.sheet, data: &data };
         build(&self.root, &context, InheritedStyle::default())
+    }
+
+    /// Builds the document's overlay, if it declares one.
+    pub fn build_overlay(&self, images: &dyn ImageResolver) -> Result<Option<Node>, XamlError> {
+        let Some(overlay) = &self.overlay else { return Ok(None) };
+        let data = self.data.clone();
+        let context = BuildContext { images, sheet: &self.sheet, data: &data };
+        // The overlay root spans the viewport but must not swallow clicks: the
+        // declared elements become children so their Position and size apply.
+        let mut wrapper = crate::node::panel();
+        wrapper.style.width = crate::style::Length::Fill;
+        wrapper.style.height = crate::style::Length::Fill;
+        wrapper.style.hit_test_visible = false;
+        wrapper.children.push(build(overlay, &context, InheritedStyle::default())?);
+        Ok(Some(wrapper))
+    }
+
+    /// Whether the document declares an overlay.
+    pub fn has_overlay(&self) -> bool {
+        self.overlay.is_some()
     }
 }
 
@@ -868,6 +903,23 @@ fn apply_common_attributes(
     }
     if let Some(v) = xml.attr("Spacing").and_then(|v| v.trim().parse::<f32>().ok()) {
         node.style.gap = v;
+    }
+    if let Some(raw) = xml.attr("IsHitTestVisible") {
+        node.style.hit_test_visible = !raw.trim().eq_ignore_ascii_case("false");
+    }
+    if let Some(raw) = xml.attr("Cursor") {
+        node.style.cursor = match raw.trim().to_ascii_lowercase().as_str() {
+            "pointer" | "hand" => crate::style::Cursor::Pointer,
+            "text" | "ibeam" => crate::style::Cursor::Text,
+            "resize-h" | "eastwest" => crate::style::Cursor::ResizeHorizontal,
+            "resize-v" | "northsouth" => crate::style::Cursor::ResizeVertical,
+            "move" => crate::style::Cursor::Move,
+            "crosshair" => crate::style::Cursor::Crosshair,
+            "default" => crate::style::Cursor::Default,
+            other => {
+                return err(xml.offset, format!("unknown cursor '{other}'"));
+            }
+        };
     }
     if let Some(raw) = xml.attr("Position") {
         let (x, y) = parse_pair(raw)

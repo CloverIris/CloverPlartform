@@ -578,6 +578,17 @@ impl Surface {
         active
     }
 
+    /// Replaces the overlay root; popups live here so nothing clips them.
+    pub fn set_overlay(&mut self, overlay: Option<Node>) -> bool {
+        self.tree.set_overlay(overlay);
+        true
+    }
+
+    /// Cursor the host should show at a point, in logical pixels.
+    pub fn cursor_at(&self, x: f32, y: f32) -> clover_ui::style::Cursor {
+        self.tree.cursor_at(clover_core::Point::new(x, y))
+    }
+
     /// Whether a drag gesture is in progress.
     ///
     /// Hosts use this to swap the cursor and to stop hit-testing underneath.
@@ -860,6 +871,50 @@ mod tests {
             button: clover_ui::MouseButton::Left,
             ..Default::default()
         })
+    }
+
+    #[test]
+    fn overlay_wins_the_hit_test_and_paints_last() {
+        let page = clover_ui::xaml::parse(
+            r##"<StackPanel Background="#101010"><Panel Width="Fill" Height="Fill" x:Name="under"/></StackPanel>"##,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(page, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        let menu = clover_ui::xaml::parse(
+            r##"<Panel Position="20,20" Width="100" Height="60" Background="#303030" x:Name="menu"/>"##,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        surface.set_overlay(Some(menu));
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        let overlay_id = surface.tree().overlay().map(|node| node.id);
+        assert!(overlay_id.is_some(), "overlay was not attached");
+        let chain = surface.tree().hit_chain(Point::new(40.0, 40.0));
+        assert_eq!(
+            chain.last().copied(),
+            overlay_id,
+            "the overlay root must be the outermost hit, not the page beneath it"
+        );
+    }
+
+    #[test]
+    fn cursor_follows_the_pointer() {
+        let page = clover_ui::xaml::parse(
+            r#"<StackPanel><Button Content="x" Cursor="pointer" Width="80" Height="40"/></StackPanel>"#,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(page, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        assert_eq!(surface.cursor_at(40.0, 20.0), clover_ui::style::Cursor::Pointer);
+        assert_eq!(surface.cursor_at(180.0, 180.0), clover_ui::style::Cursor::Default);
     }
 
     #[test]

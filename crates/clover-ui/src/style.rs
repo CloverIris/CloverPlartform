@@ -57,6 +57,20 @@ impl Length {
     }
 }
 
+/// Mouse cursor a node asks the host to show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Cursor {
+    /// Inherit from the parent, ultimately the arrow.
+    #[default]
+    Default,
+    Pointer,
+    Text,
+    ResizeHorizontal,
+    ResizeVertical,
+    Move,
+    Crosshair,
+}
+
 /// One colour stop in a gradient, `offset` in `0.0..=1.0`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GradientStop {
@@ -157,6 +171,11 @@ pub struct Style {
     /// When set, children are laid out in this many uniform columns instead of a
     /// single stack line.
     pub grid_columns: Option<u32>,
+    /// Cursor to show while the pointer is over this node.
+    pub cursor: Cursor,
+    /// When false the node paints but takes no hits, so clicks pass through to
+    /// whatever is underneath. Overlay wrappers rely on this.
+    pub hit_test_visible: bool,
     /// Takes this node out of the flow and places it at this offset from the
     /// parent's content origin, in logical pixels.
     ///
@@ -205,6 +224,8 @@ impl Default for Style {
             padding: Edges::ZERO,
             direction: Orientation::Vertical,
             grid_columns: None,
+            cursor: Cursor::Default,
+            hit_test_visible: true,
             position: None,
             gap: 0.0,
             align: Align::Stretch,

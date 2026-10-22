@@ -269,6 +269,18 @@ clover_result clover_surface_animate_background(clover_surface *surface, const c
 bool clover_surface_advance(clover_surface *surface, uint64_t now_ms);
 
 /*
+ * Overlay
+ * -------
+ * The overlay root paints above the page and takes hits first, so menus,
+ * dropdowns, tooltips and toasts are never clipped by whatever opened them.
+ */
+clover_result clover_surface_set_overlay_cui(clover_surface *surface, const char *xaml_utf8);
+clover_result clover_surface_clear_overlay(clover_surface *surface);
+
+/* Cursor the host should show at a logical point (0 default, 1 pointer, ...). */
+uint32_t clover_surface_cursor(clover_surface *surface, float x, float y);
+
+/*
  * Host-owned pixels
  * -----------------
  * Thumbnails change every frame, so they are uploaded rather than decoded from

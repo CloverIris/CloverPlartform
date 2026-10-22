@@ -23,7 +23,7 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 
 ![A .cui document rendered by the framework](docs/cui.png)
 
-> Status: **0.12 — absolute positioning, drag gestures, host pixels**. The pipeline works end to end (tree →
+> Status: **0.13 — overlay layer, cursors, rewrite plan**. The pipeline works end to end (tree →
 > layout → display list → tile-parallel raster → frame), both authoring
 > front-ends produce the same tree, layout supports flex-style `Fill`, text
 > wraps, and keyboard focus is routed. Styles, templates, bindings and animation
@@ -72,6 +72,12 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 * **Control templates.** `<Template x:Key="chip">` in a stylesheet replaces a
   control's visuals while keeping its properties; `{Binding Content}` and
   `{Binding Tag}` bind the control into the template.
+* **Overlay layer.** `<Overlay>` in a `.cui` document paints above the page and
+  takes hits first, so menus, dropdowns, tooltips and toasts are never clipped by
+  the node that opened them. The wrapper passes clicks through; only the elements
+  you place take input.
+* **Cursors.** `Cursor="pointer|text|resize-h|resize-v|move|crosshair"` — the
+  framework reports what the host should show at a point.
 * **Absolute positioning.** `Position="x,y"` takes a node out of the flow and
   places it relative to its parent's content box — floating panels, menus and
   tooltips. It consumes no space from siblings.

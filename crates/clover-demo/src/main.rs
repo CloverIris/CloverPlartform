@@ -116,6 +116,11 @@ fn main() {
                 .build(&|key: &str| surface.renderer().images.handle_for(key))
                 .expect("cui build")
         };
+        if let Ok(Some(overlay)) = document.build_overlay(&|key: &str| {
+            cui_surface.renderer().images.handle_for(key)
+        }) {
+            cui_surface.set_overlay(Some(overlay));
+        }
         cui_surface.set_root(root);
         cui_surface.invalidate_all();
         let _ = cui_surface.frame();

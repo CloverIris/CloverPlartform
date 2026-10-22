@@ -38,7 +38,8 @@
       <Button Content="Brush"/>
       <Button Content="Eraser"/>
       <Button Content="Fill"/>
-      <Button Content="Chip" Template="chip"/>
+      <Button Content="Chip" Template="chip" Cursor="pointer"/>
+      <Button Content="Menu ▲" Cursor="pointer"/>
       <TextBox x:Name="filter" Text="{Binding filter}" Placeholder="Filter layers..."
                Width="180" Height="30" Background="#1B1E22" Foreground="#E8ECF0"
                CornerRadius="5" BorderThickness="1" BorderBrush="#3B4048"/>
@@ -86,4 +87,13 @@
       <TextBlock Text="{Binding zoom}"/>
     </StackPanel>
   </StackPanel>
+
+  <!-- Overlay: paints above the page and is hit first, so nothing clips it. -->
+  <Overlay>
+    <Panel Position="300,300" Width="260" Height="120" Background="#2B3138" CornerRadius="10"
+           BorderThickness="1" BorderBrush="#4A525C" Cursor="default">
+      <TextBlock Text="弹出层 · Overlay" FontSize="14" Foreground="#FFFFFF" Margin="14,10,14,0"/>
+      <TextBlock Text="不被父容器裁剪，命中优先" FontSize="11" Foreground="#98A1AC" Margin="14,36,14,0"/>
+    </Panel>
+  </Overlay>
 </Ui>

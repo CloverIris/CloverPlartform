@@ -771,6 +771,62 @@ unsafe fn add_image(
     CloverResult::Ok
 }
 
+/// Replaces the overlay root, which paints above the page and hit-tests first.
+///
+/// Menus, dropdowns, tooltips and toasts live here: an overlay is not clipped by
+/// the node that opened it.
+///
+/// # Safety
+/// `xaml_utf8` must be a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_set_overlay_cui(
+    surface: *mut CloverSurface,
+    xaml_utf8: *const c_char,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if xaml_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let Ok(markup) = CStr::from_ptr(xaml_utf8).to_str() else { return CloverResult::ParseError };
+    let Ok(root) = xaml::parse(markup, &xaml::NoImages) else { return CloverResult::ParseError };
+    surface.surface.set_overlay(Some(root));
+    CloverResult::Ok
+}
+
+/// Removes the overlay.
+///
+/// # Safety
+/// `surface` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_clear_overlay(surface: *mut CloverSurface) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    surface.surface.set_overlay(None);
+    CloverResult::Ok
+}
+
+/// Cursor the host should show at a logical point (`0` default, `1` pointer,
+/// `2` text, `3` resize-h, `4` resize-v, `5` move, `6` crosshair).
+///
+/// # Safety
+/// `surface` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_cursor(
+    surface: *mut CloverSurface,
+    x: f32,
+    y: f32,
+) -> u32 {
+    let Some(surface) = surface.as_mut() else { return 0 };
+    match surface.surface.cursor_at(x, y) {
+        clover_ui::style::Cursor::Default => 0,
+        clover_ui::style::Cursor::Pointer => 1,
+        clover_ui::style::Cursor::Text => 2,
+        clover_ui::style::Cursor::ResizeHorizontal => 3,
+        clover_ui::style::Cursor::ResizeVertical => 4,
+        clover_ui::style::Cursor::Move => 5,
+        clover_ui::style::Cursor::Crosshair => 6,
+    }
+}
+
 /// Registers an image from a PNG file and returns its handle, or 0 on failure.
 ///
 /// # Safety

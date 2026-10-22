@@ -89,6 +89,10 @@ pub fn build(tree: &UiTree, scale: f32, text: &TextEngine, images: &ImageStore) 
 
     let mut cmds = Vec::new();
     walk(tree.root(), scale, canvas, &mut cmds, text, images);
+    // The overlay paints last so popups are never clipped by their host.
+    if let Some(overlay) = tree.overlay() {
+        walk(overlay, scale, canvas, &mut cmds, text, images);
+    }
     DisplayList { cmds, width, height, scale }
 }
 
