@@ -160,6 +160,8 @@ pub struct Surface {
     pending_actions: Vec<String>,
     /// Node that will fire if the pointer is released over it.
     press_action: Option<NodeId>,
+    /// Active drag gesture, if any.
+    drag: Option<DragState>,
 }
 
 impl Surface {
@@ -174,6 +176,7 @@ impl Surface {
             generation: 0,
             pending_actions: Vec::new(),
             press_action: None,
+            drag: None,
         };
         surface.resize(width, height, scale);
         Some(surface)
@@ -575,6 +578,13 @@ impl Surface {
         active
     }
 
+    /// Whether a drag gesture is in progress.
+    ///
+    /// Hosts use this to swap the cursor and to stop hit-testing underneath.
+    pub fn is_dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
     /// Pops the next action raised by input, if any.
     pub fn take_action(&mut self) -> Option<String> {
         if self.pending_actions.is_empty() {
@@ -598,6 +608,21 @@ impl Surface {
                     clover_ui::PointerAction::Down => {
                         // Focus the innermost focusable ancestor of the hit node.
                         let chain = self.tree.hit_chain(p.position);
+                        // A drag handle claims the gesture first: dragging a panel
+                        // must not also press whatever is drawn on top of it.
+                        if let Some(target) = chain
+                            .iter()
+                            .copied()
+                            .find_map(|id| self.tree.find_drag_ancestor(id).map(|(node, payload)| (node, payload.to_string())))
+                        {
+                            self.drag = Some(DragState {
+                                node: target.0,
+                                payload: target.1.clone(),
+                                last: p.position,
+                                total: clover_core::Point::default(),
+                            });
+                            self.pending_actions.push(format!("drag:begin:{}", target.1));
+                        }
                         let focus_target = chain
                             .iter()
                             .copied()
@@ -607,6 +632,12 @@ impl Surface {
                         self.press_action = self.action_target(&chain).map(|(id, _)| id);
                     }
                     clover_ui::PointerAction::Up => {
+                        if let Some(drag) = self.drag.take() {
+                            self.pending_actions.push(format!("drag:end:{}", drag.payload));
+                            self.press_action = None;
+                            self.tree.set_pressed(None);
+                            return Vec::new();
+                        }
                         // Activation requires press and release on the same
                         // actionable node, like every desktop toolkit.
                         let chain = self.tree.hit_chain(p.position);
@@ -620,10 +651,25 @@ impl Surface {
                         self.tree.set_pressed(None);
                     }
                     clover_ui::PointerAction::Cancel => {
+                        if let Some(drag) = self.drag.take() {
+                            self.pending_actions.push(format!("drag:end:{}", drag.payload));
+                        }
                         self.press_action = None;
                         self.tree.set_pressed(None);
                     }
-                    clover_ui::PointerAction::Move => {}
+                    clover_ui::PointerAction::Move => {
+                        if let Some(drag) = self.drag.as_mut() {
+                            let dx = p.position.x - drag.last.x;
+                            let dy = p.position.y - drag.last.y;
+                            if dx != 0.0 || dy != 0.0 {
+                                drag.last = p.position;
+                                drag.total.x += dx;
+                                drag.total.y += dy;
+                                let action = format!("drag:move:{}:{}:{}", drag.payload, dx, dy);
+                                self.pending_actions.push(action);
+                            }
+                        }
+                    }
                 }
             }
             UiEvent::Wheel(w) => {
@@ -707,6 +753,15 @@ fn advance_node(node: &mut Node, now_ms: u64, changed: &mut Vec<Rect>, active: &
     for child in &mut node.children {
         advance_node(child, now_ms, changed, active);
     }
+}
+
+/// An in-progress drag. The framework owns the gesture; the host owns the meaning.
+struct DragState {
+    #[allow(dead_code)]
+    node: NodeId,
+    payload: String,
+    last: clover_core::Point,
+    total: clover_core::Point,
 }
 
 fn previous_boundary(text: &str, position: usize) -> usize {
@@ -796,6 +851,74 @@ mod tests {
         while surface.take_action().is_some() {}
         press(&mut surface, 0x0D); // enter
         assert_eq!(surface.take_action().as_deref(), Some("submit:search"));
+    }
+
+    fn drag_event(action: PointerAction, x: f32, y: f32) -> UiEvent {
+        UiEvent::Pointer(PointerEvent {
+            action,
+            position: Point::new(x, y),
+            button: clover_ui::MouseButton::Left,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn dragging_reports_begin_move_end_with_deltas() {
+        let root = node::panel().child(
+            node::panel()
+                .size(Length::Px(60.0), Length::Px(60.0))
+                .drag("panel")
+                .name("handle"),
+        );
+        let mut surface = Surface::new(root, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        surface.dispatch(drag_event(PointerAction::Down, 10.0, 10.0));
+        assert_eq!(surface.take_action().as_deref(), Some("drag:begin:panel"));
+        assert!(surface.is_dragging());
+
+        surface.dispatch(drag_event(PointerAction::Move, 14.0, 13.0));
+        assert_eq!(surface.take_action().as_deref(), Some("drag:move:panel:4:3"));
+
+        surface.dispatch(drag_event(PointerAction::Move, 20.0, 20.0));
+        assert_eq!(surface.take_action().as_deref(), Some("drag:move:panel:6:7"));
+
+        surface.dispatch(drag_event(PointerAction::Up, 20.0, 20.0));
+        assert_eq!(surface.take_action().as_deref(), Some("drag:end:panel"));
+        assert!(!surface.is_dragging());
+    }
+
+    #[test]
+    fn a_drag_does_not_also_fire_the_action() {
+        let root = node::panel().child(
+            node::panel()
+                .size(Length::Px(60.0), Length::Px(60.0))
+                .drag("panel")
+                .action("select")
+                .name("handle"),
+        );
+        let mut surface = Surface::new(root, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        surface.dispatch(drag_event(PointerAction::Down, 10.0, 10.0));
+        surface.dispatch(drag_event(PointerAction::Up, 10.0, 10.0));
+        let mut seen = Vec::new();
+        while let Some(action) = surface.take_action() {
+            seen.push(action);
+        }
+        assert_eq!(seen, vec!["drag:begin:panel", "drag:end:panel"], "the click action must not also fire");
+    }
+
+    #[test]
+    fn a_move_without_a_drag_is_silent() {
+        let root = node::panel().child(node::panel().size(Length::Px(60.0), Length::Px(60.0)));
+        let mut surface = Surface::new(root, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        surface.dispatch(drag_event(PointerAction::Move, 60.0, 60.0));
+        assert_eq!(surface.take_action(), None);
     }
 
     #[test]

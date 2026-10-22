@@ -157,6 +157,12 @@ pub struct Style {
     /// When set, children are laid out in this many uniform columns instead of a
     /// single stack line.
     pub grid_columns: Option<u32>,
+    /// Takes this node out of the flow and places it at this offset from the
+    /// parent's content origin, in logical pixels.
+    ///
+    /// Floating panels, menus and tooltips need this: a margin can shift a node
+    /// inside its slot, but it cannot make the node ignore the slot entirely.
+    pub position: Option<clover_core::Point>,
     /// Main-axis gap between children.
     pub gap: f32,
     /// Cross-axis alignment of children.
@@ -199,6 +205,7 @@ impl Default for Style {
             padding: Edges::ZERO,
             direction: Orientation::Vertical,
             grid_columns: None,
+            position: None,
             gap: 0.0,
             align: Align::Stretch,
             justify: Align::Start,

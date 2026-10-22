@@ -702,6 +702,75 @@ pub unsafe extern "C" fn clover_surface_advance(surface: *mut CloverSurface, now
     surface.surface.advance(now_ms)
 }
 
+/// Registers host-owned pixels as a named image (RGBA8, straight alpha).
+///
+/// Hosts that already produce premultiplied BGRA8 (the frame format) should use
+/// `clover_surface_add_image_bgra8_premul` instead and skip the conversion.
+///
+/// # Safety
+/// `key_utf8` must be NUL-terminated and `pixels` must point to
+/// `width * height * 4` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_add_image_rgba8(
+    surface: *mut CloverSurface,
+    key_utf8: *const c_char,
+    width: u32,
+    height: u32,
+    pixels: *const u8,
+) -> CloverResult {
+    add_image(surface, key_utf8, width, height, pixels, false)
+}
+
+/// Registers host-owned pixels as a named image (BGRA8, premultiplied).
+///
+/// # Safety
+/// `key_utf8` must be NUL-terminated and `pixels` must point to
+/// `width * height * 4` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_add_image_bgra8_premul(
+    surface: *mut CloverSurface,
+    key_utf8: *const c_char,
+    width: u32,
+    height: u32,
+    pixels: *const u8,
+) -> CloverResult {
+    add_image(surface, key_utf8, width, height, pixels, true)
+}
+
+unsafe fn add_image(
+    surface: *mut CloverSurface,
+    key_utf8: *const c_char,
+    width: u32,
+    height: u32,
+    pixels: *const u8,
+    premultiplied_bgra: bool,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if key_utf8.is_null() || pixels.is_null() || width == 0 || height == 0 {
+        return CloverResult::NullArgument;
+    }
+    let Ok(key) = CStr::from_ptr(key_utf8).to_str() else { return CloverResult::ParseError };
+    let count = width as usize * height as usize;
+    let bytes = std::slice::from_raw_parts(pixels, count * 4);
+    let mut words = Vec::with_capacity(count);
+    if premultiplied_bgra {
+        for chunk in bytes.chunks_exact(4) {
+            // Memory order B,G,R,A becomes the packed premultiplied word directly.
+            words.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+        }
+    } else {
+        for chunk in bytes.chunks_exact(4) {
+            let color = clover_core::Color::rgba(chunk[0], chunk[1], chunk[2], chunk[3]);
+            words.push(color.premultiply().0);
+        }
+    }
+    surface.surface.renderer_mut().images.insert_named(
+        key,
+        clover_render::canvas::ImagePixels { width, height, pixels: words },
+    );
+    CloverResult::Ok
+}
+
 /// Registers an image from a PNG file and returns its handle, or 0 on failure.
 ///
 /// # Safety

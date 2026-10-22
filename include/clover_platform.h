@@ -268,6 +268,18 @@ clover_result clover_surface_animate_background(clover_surface *surface, const c
                                                 uint32_t rgba, uint64_t duration_ms, uint64_t now_ms);
 bool clover_surface_advance(clover_surface *surface, uint64_t now_ms);
 
+/*
+ * Host-owned pixels
+ * -----------------
+ * Thumbnails change every frame, so they are uploaded rather than decoded from
+ * disk. Registering the same key again replaces the previous image.
+ */
+clover_result clover_surface_add_image_rgba8(clover_surface *surface, const char *key_utf8,
+                                             uint32_t width, uint32_t height, const uint8_t *pixels);
+clover_result clover_surface_add_image_bgra8_premul(clover_surface *surface, const char *key_utf8,
+                                                    uint32_t width, uint32_t height,
+                                                    const uint8_t *pixels);
+
 /* Registers a PNG image and returns its handle, or 0 on failure. */
 uint64_t clover_surface_add_image_png(clover_surface *surface, const char *path_utf8);
 

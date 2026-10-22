@@ -71,6 +71,15 @@
       </Panel>
     </StackPanel>
 
+    <Panel x:Name="floating" Position="360,150" Width="248" Height="96"
+           Background="#242A31" CornerRadius="10" BorderThickness="1" BorderBrush="#3B424B"
+           Drag="panel-floating">
+      <TextBlock Text="浮动面板 · 拖动我" FontSize="14" Foreground="#E8ECF0"
+                 Margin="14,12,14,0"/>
+      <TextBlock Text="Position 绝对定位 + Drag 手势" FontSize="11" Foreground="#8A929C"
+                 Margin="14,38,14,0"/>
+    </Panel>
+
     <StackPanel x:Name="status" Orientation="Horizontal" Spacing="18">
       <TextBlock Text="工具 {Binding tool}"/>
       <TextBlock Text="{Binding doc}"/>

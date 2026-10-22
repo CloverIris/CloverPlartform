@@ -23,7 +23,7 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 
 ![A .cui document rendered by the framework](docs/cui.png)
 
-> Status: **0.11 — gradients, templates, animation**. The pipeline works end to end (tree →
+> Status: **0.12 — absolute positioning, drag gestures, host pixels**. The pipeline works end to end (tree →
 > layout → display list → tile-parallel raster → frame), both authoring
 > front-ends produce the same tree, layout supports flex-style `Fill`, text
 > wraps, and keyboard focus is routed. Styles, templates, bindings and animation
@@ -72,6 +72,14 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 * **Control templates.** `<Template x:Key="chip">` in a stylesheet replaces a
   control's visuals while keeping its properties; `{Binding Content}` and
   `{Binding Tag}` bind the control into the template.
+* **Absolute positioning.** `Position="x,y"` takes a node out of the flow and
+  places it relative to its parent's content box — floating panels, menus and
+  tooltips. It consumes no space from siblings.
+* **Drag gestures.** `Drag="payload"` turns a node into a drag handle; the
+  framework reports `drag:begin/move/end` actions with incremental deltas, and a
+  drag never also fires the node's click action.
+* **Host-owned pixels.** `clover_surface_add_image_rgba8` /
+  `_bgra8_premul` register thumbnails and other per-frame images by key.
 * **Animation.** Opacity and background colour ease towards a target over a
   duration; `Surface::advance` returns whether more frames are needed, so hosts
   stop requesting frames when everything settles.

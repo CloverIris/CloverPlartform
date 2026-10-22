@@ -192,6 +192,12 @@ pub struct Node {
     /// The framework decides *when* activation happens; the host decides what the
     /// command means. `None` means the node is not actionable.
     pub action: Option<String>,
+    /// Identifies this node as a drag handle.
+    ///
+    /// Dragging reports `drag:begin:<payload>`, `drag:move:<payload>:<dx>:<dy>`
+    /// and `drag:end:<payload>` actions. The framework owns the gesture and the
+    /// deltas; the host owns what the payload means.
+    pub drag_payload: Option<String>,
 }
 
 impl Default for Node {
@@ -212,6 +218,7 @@ impl Default for Node {
             animation: None,
             classes: Vec::new(),
             action: None,
+            drag_payload: None,
         }
     }
 }
@@ -298,6 +305,18 @@ impl Node {
 
     pub fn direction(mut self, direction: Orientation) -> Self {
         self.style.direction = direction;
+        self
+    }
+
+    /// Places this node absolutely, outside the parent's flow.
+    pub fn position(mut self, x: f32, y: f32) -> Self {
+        self.style.position = Some(clover_core::Point::new(x, y));
+        self
+    }
+
+    /// Makes this node a drag source identified by `payload`.
+    pub fn drag(mut self, payload: impl Into<String>) -> Self {
+        self.drag_payload = Some(payload.into());
         self
     }
 
@@ -475,6 +494,30 @@ impl Node {
         for child in &self.children {
             child.walk(visit);
         }
+    }
+
+    /// Nearest ancestor of `id` (inclusive) that is a drag handle.
+    pub fn find_drag_ancestor(&self, id: NodeId) -> Option<(NodeId, &str)> {
+        fn walk<'a>(
+            node: &'a Node,
+            target: NodeId,
+            current: Option<(NodeId, &'a str)>,
+        ) -> Option<Option<(NodeId, &'a str)>> {
+            let current = match node.drag_payload.as_deref() {
+                Some(payload) => Some((node.id, payload)),
+                None => current,
+            };
+            if node.id == target {
+                return Some(current);
+            }
+            for child in &node.children {
+                if let Some(found) = walk(child, target, current) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        walk(self, id, None).flatten()
     }
 
     /// Nearest ancestor of `id` (inclusive) that carries an action.
@@ -925,6 +968,11 @@ impl UiTree {
     /// the whole root dirty, so damage tracking is defeated and every frame
     /// becomes a full-surface repaint. That is the most expensive mistake this
     /// file has made.
+    /// Nearest ancestor of `id` (inclusive) that is a drag handle.
+    pub fn find_drag_ancestor(&self, id: NodeId) -> Option<(NodeId, &str)> {
+        self.root.find_drag_ancestor(id)
+    }
+
     pub fn invalidate_layout(&mut self) {
         self.layout_dirty = true;
     }

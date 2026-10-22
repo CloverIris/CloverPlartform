@@ -95,6 +95,16 @@ impl ImageStore {
         Ok(handle)
     }
 
+    /// Registers an already-decoded image under `name`.
+    ///
+    /// Hosts use this for content they own, such as layer thumbnails that change
+    /// every frame.
+    pub fn insert_named(&mut self, name: impl Into<String>, pixels: ImagePixels) -> ImageHandle {
+        let handle = self.insert(pixels);
+        self.names.insert(name.into(), handle);
+        handle
+    }
+
     /// The handle bound to `name`, if any.
     pub fn handle_for(&self, name: &str) -> Option<ImageHandle> {
         self.names.get(name).copied()

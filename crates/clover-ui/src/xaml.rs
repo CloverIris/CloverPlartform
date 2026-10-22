@@ -869,6 +869,14 @@ fn apply_common_attributes(
     if let Some(v) = xml.attr("Spacing").and_then(|v| v.trim().parse::<f32>().ok()) {
         node.style.gap = v;
     }
+    if let Some(raw) = xml.attr("Position") {
+        let (x, y) = parse_pair(raw)
+            .ok_or_else(|| XamlError { message: format!("Position '{raw}' needs x,y"), offset: xml.offset })?;
+        node.style.position = Some(clover_core::Point::new(x, y));
+    }
+    if let Some(raw) = xml.attr("Drag") {
+        node.drag_payload = Some(context.data.resolve_text(raw));
+    }
     if let Some(kind) = xml.attr("BackgroundGradient") {
         let stops = xml
             .attr("GradientStops")
@@ -1155,6 +1163,19 @@ mod tests {
     fn templates_require_a_key_and_a_body() {
         assert!(parse_stylesheet(r#"<Styles><Template><Panel/></Template></Styles>"#).is_err());
         assert!(parse_stylesheet(r#"<Styles><Template x:Key="x"></Template></Styles>"#).is_err());
+    }
+
+    #[test]
+    fn parses_position_and_drag() {
+        let page = parse(
+            r#"<Panel><Panel Position="12,40" Drag="panel-left" Width="100" Height="50"/></Panel>"#,
+            &NoImages,
+        )
+        .unwrap();
+        let floating = &page.children[0];
+        assert_eq!(floating.style.position, Some(clover_core::Point::new(12.0, 40.0)));
+        assert_eq!(floating.drag_payload.as_deref(), Some("panel-left"));
+        assert!(parse(r#"<Panel Position="nope"/>"#, &NoImages).is_err());
     }
 
     #[test]

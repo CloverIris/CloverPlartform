@@ -172,6 +172,15 @@ fn measure_grid(node: &Node, available: Size, metrics: &dyn LayoutMetrics, colum
     Size::new(style.clamp_width(width), style.clamp_height(height))
 }
 
+fn resolve_absolute(length: Length, available: f32, fallback: f32) -> f32 {
+    match length {
+        Length::Auto => fallback,
+        Length::Fill => available,
+        Length::Percent(value) => available * value,
+        Length::Px(value) => value,
+    }
+}
+
 fn arrange_grid(node: &mut Node, content_box: Rect, metrics: &dyn LayoutMetrics, columns: usize) {
     let content = content_box.size();
     let cell_w = (content.w / columns as f32).max(0.0);
@@ -179,7 +188,7 @@ fn arrange_grid(node: &mut Node, content_box: Rect, metrics: &dyn LayoutMetrics,
         .children
         .iter()
         .enumerate()
-        .filter(|(_, child)| child.visible)
+        .filter(|(_, child)| child.visible && child.style.position.is_none())
         .map(|(index, _)| index)
         .collect();
     if indices.is_empty() {
@@ -250,6 +259,31 @@ fn arrange(node: &mut Node, border_box: Rect, metrics: &dyn LayoutMetrics) {
     }
 
     let content_box = node.style.padding.deflate(border_box);
+
+    // Absolutely positioned children sit outside the flow: place them at their
+    // own offset and let them take no space from their siblings.
+    let mut absolute: Vec<usize> = Vec::new();
+    for (index, child) in node.children.iter().enumerate() {
+        if child.visible && child.style.position.is_some() {
+            absolute.push(index);
+        }
+    }
+    for index in absolute {
+        let position = node.children[index].style.position.unwrap_or_default();
+        let available = content_box.size();
+        let measured = measure(&node.children[index], available, metrics);
+        // An absolute child has no slot to fill, so `Fill` means "the whole
+        // content box" rather than "whatever the flow left over".
+        let width = resolve_absolute(node.children[index].style.width, available.w, measured.w);
+        let height = resolve_absolute(node.children[index].style.height, available.h, measured.h);
+        let child = &mut node.children[index];
+        arrange(
+            child,
+            Rect::new(content_box.x + position.x, content_box.y + position.y, width, height),
+            metrics,
+        );
+    }
+
     if let Some(columns) = node.style.grid_columns {
         arrange_grid(node, content_box, metrics, columns.max(1) as usize);
         return;
@@ -261,7 +295,7 @@ fn arrange(node: &mut Node, border_box: Rect, metrics: &dyn LayoutMetrics) {
     // 1. Measure every child against the content box.
     let mut sizes: Vec<Size> = Vec::with_capacity(node.children.len());
     for child in &node.children {
-        if !child.visible {
+        if !child.visible || child.style.position.is_some() {
             sizes.push(Size::ZERO);
             continue;
         }
@@ -278,7 +312,7 @@ fn arrange(node: &mut Node, border_box: Rect, metrics: &dyn LayoutMetrics) {
     let mut fill_count = 0usize;
     let mut visible_count = 0usize;
     for (child, size) in node.children.iter().zip(&sizes) {
-        if !child.visible {
+        if !child.visible || child.style.position.is_some() {
             continue;
         }
         visible_count += 1;
@@ -297,7 +331,7 @@ fn arrange(node: &mut Node, border_box: Rect, metrics: &dyn LayoutMetrics) {
     if fill_count > 0 {
         let per_fill = ((main_available - fixed_total).max(0.0)) / fill_count as f32;
         for (index, child) in node.children.iter().enumerate() {
-            if !child.visible || !child.style.fills_main(horizontal) {
+            if !child.visible || child.style.position.is_some() || !child.style.fills_main(horizontal) {
                 continue;
             }
             let extent = (per_fill - main_margin_of(child.style.margin, horizontal)).max(0.0);
@@ -312,7 +346,7 @@ fn arrange(node: &mut Node, border_box: Rect, metrics: &dyn LayoutMetrics) {
     // 3. Remaining slack goes to justify (zero once fill children took it).
     let mut main_total = 0.0f32;
     for (child, size) in node.children.iter().zip(&sizes) {
-        if !child.visible {
+        if !child.visible || child.style.position.is_some() {
             continue;
         }
         main_total += main_of(*size, horizontal) + main_margin_of(child.style.margin, horizontal);
@@ -339,7 +373,7 @@ fn arrange(node: &mut Node, border_box: Rect, metrics: &dyn LayoutMetrics) {
         let mut total = 0.0f32;
         let mut counted = 0usize;
         for (child, size) in node.children.iter().zip(&sizes) {
-            if !child.visible {
+            if !child.visible || child.style.position.is_some() {
                 continue;
             }
             total += size.h + child.style.margin.vertical();
@@ -358,6 +392,10 @@ fn arrange(node: &mut Node, border_box: Rect, metrics: &dyn LayoutMetrics) {
     for (index, child) in node.children.iter_mut().enumerate() {
         if !child.visible {
             child.bounds = Rect::ZERO;
+            continue;
+        }
+        // Already placed by the absolute pass above; the flow must not move it.
+        if child.style.position.is_some() {
             continue;
         }
         let size = sizes[index];
@@ -630,6 +668,46 @@ mod tests {
         let row = &root.children[0];
         assert_eq!(row.bounds.h, 80.0);
         assert_eq!(row.children[0].bounds.w, 100.0, "inner fill spans the row");
+    }
+
+    #[test]
+    fn absolute_position_ignores_the_flow() {
+        let mut root = node::column()
+            .size(Length::Px(200.0), Length::Px(200.0))
+            .child(node::panel().size(Length::Px(50.0), Length::Px(50.0)).name("flow"))
+            .child(
+                node::panel()
+                    .size(Length::Px(30.0), Length::Px(30.0))
+                    .position(120.0, 40.0)
+                    .name("floating"),
+            )
+            .child(node::panel().size(Length::Px(50.0), Length::Px(50.0)).name("after"));
+        layout(&mut root, size(200.0, 200.0), &EmptyMetrics);
+        assert_eq!(root.children[0].bounds, Rect::new(0.0, 0.0, 50.0, 50.0));
+        assert_eq!(
+            root.children[2].bounds,
+            Rect::new(0.0, 50.0, 50.0, 50.0),
+            "the next flow child is not pushed down by the floating one"
+        );
+        assert_eq!(
+            root.children[1].bounds,
+            Rect::new(120.0, 40.0, 30.0, 30.0),
+            "absolute position is relative to the content box"
+        );
+    }
+
+    #[test]
+    fn absolute_position_respects_padding_and_fill() {
+        let mut root = node::column()
+            .size(Length::Px(100.0), Length::Px(100.0))
+            .padding(Edges::all(10.0))
+            .child(
+                node::panel()
+                    .size(Length::Fill, Length::Px(20.0))
+                    .position(5.0, 15.0),
+            );
+        layout(&mut root, size(100.0, 100.0), &EmptyMetrics);
+        assert_eq!(root.children[0].bounds, Rect::new(15.0, 25.0, 80.0, 20.0));
     }
 
     #[test]

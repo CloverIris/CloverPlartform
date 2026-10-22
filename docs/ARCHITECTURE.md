@@ -162,6 +162,25 @@ Today `hdr_raster` is false, so an HDR request lands on `Bgra8Sdr` with
 silent one — the whole point of recording the reason is that a host can surface
 it and a future float raster path only has to flip one flag.
 
+## 5c2. Absolute positioning and drag
+
+Two capabilities were added because the CloverPic workspace cannot be expressed
+without them:
+
+**Absolute positioning.** `Style::position` takes a node out of the flow. A
+margin shifts a node inside its slot; it cannot make the node ignore the slot.
+Floating panels, menus and tooltips need the latter, so positioned children are
+measured and placed first, then excluded from every flow calculation (content
+size, fill distribution, gap accounting, scroll extent).
+
+**Drag.** The framework owns the gesture, the host owns the meaning:
+`drag:begin:<payload>`, `drag:move:<payload>:<dx>:<dy>`, `drag:end:<payload>`.
+Deltas are incremental and in logical pixels, so a host can apply them to its own
+state without tracking the origin.
+
+A press on a drag handle claims the gesture before press/action logic runs, so
+dragging a panel never also activates whatever is drawn on it.
+
 ## 5d. Gradients
 
 A gradient is a brush, not a separate draw path: `Brush::Gradient { geometry,
