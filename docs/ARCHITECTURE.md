@@ -88,7 +88,23 @@ layout and rasterisation disagree and text overflows its box. That is why
 `LayoutMetrics::measure_text` takes the optional max width instead of leaving
 wrapping to the renderer.
 
-## 6. Focus
+## 6. Scrolling
+
+A scroll container is a **viewport**; that word is doing real work. During
+measure it reports `min(content, available)` instead of its content height.
+
+Without that rule, `Height: Fill` inside an `Auto`-height parent resolves against
+the content height the container just reported, so the container ends up exactly
+as tall as its content and can never scroll. The bug is invisible in a simple
+test and obvious the moment a scroll view sits in a stack.
+
+During arrange the container measures its content, stores it on
+`Node::scroll.content_height`, clamps `offset` to `content - viewport`, and lays
+children out in a box shifted up by the offset. Wheel events route to the nearest
+scrollable ancestor of the hit node; the scrollbar is emitted after the children
+so it paints on top.
+
+## 7. Focus
 
 Focus lives on `UiTree`, not on the platform layer: `set_focus` and `focus_next`
 update `NodeState::focused` and mark the affected bounds dirty. Traversal order is
@@ -98,7 +114,7 @@ Pointer-down focuses the innermost focusable ancestor of the hit node, and
 Tab/Shift+Tab are consumed by `Surface::dispatch` before routing. Everything else
 routes from the focused node.
 
-## 7. Direct-memory surfaces
+## 8. Direct-memory surfaces
 
 A `DirectSurface` is a pixel buffer that another thread owns and writes.
 
@@ -122,7 +138,7 @@ one. That is the swap-chain consistency guarantee.
 The C ABI exposes this as `clover_direct_begin_write` / `clover_direct_commit`,
 which is exactly the "give me the memory address" escape hatch.
 
-## 8. Pixel format
+## 9. Pixel format
 
 Internally, and on the frame handed to hosts: **premultiplied BGRA8 in `u32`**
 (`0xAARRGGBB`, memory order B,G,R,A on little-endian).
@@ -134,7 +150,7 @@ only at export boundaries (PNG).
 This also matches CloverPic's `RgbaFrame`, so a CloverPlatform surface can be
 handed to the existing adapters without a conversion pass.
 
-## 9. C ABI boundary
+## 10. C ABI boundary
 
 The host keeps: window creation, the event loop, platform input, and presenting
 pixels. CloverPlatform keeps: the tree, layout, rasterisation and the frame
@@ -150,9 +166,8 @@ surface.
 
 ## Open questions
 
-* **Scrolling.** A `Fill` region whose content is taller than the viewport is
-  simply clipped. Scroll containers need a transform in the display list and a
-  wheel-to-offset mapping.
+* **Horizontal scrolling and scroll-into-view.** Only the vertical axis scrolls,
+  and focus does not reveal an off-screen node yet.
 * **Mixed-style text runs.** Wrapping currently assumes one font size and one
   colour per node, so a bold span forces a whole extra node.
 * **Styles.** XAML attributes are read verbatim per element. A style/template

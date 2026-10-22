@@ -73,6 +73,18 @@ fn main() {
     let out = std::path::Path::new("demo.png");
     write_png(out, &surface).expect("write demo.png");
 
+    // Scroll the list through the same path a host uses, then render again.
+    use clover_ui::{Modifiers, WheelEvent};
+    surface.dispatch(clover_ui::UiEvent::Wheel(WheelEvent {
+        delta: -4.0,
+        position: clover_core::Point::new(90.0, 260.0),
+        modifiers: Modifiers::NONE,
+    }));
+    surface.invalidate_all();
+    let _ = surface.frame();
+    let scrolled = std::path::Path::new("demo-scrolled.png");
+    write_png(scrolled, &surface).expect("write demo-scrolled.png");
+
     let focus_order = focus_order(&surface);
     println!("CloverPlatform demo");
     println!("  nodes            : {}", surface.tree().root().count());
@@ -83,6 +95,7 @@ fn main() {
     println!("  final render     : {:.2} ms", render_elapsed.as_secs_f32() * 1000.0);
     println!("  focus order      : {}", focus_order.join(" -> "));
     println!("  output           : {}", out.display());
+    println!("  scrolled output  : {} (4 wheel notches)", scrolled.display());
 }
 
 /// Names of the focusable nodes in tab order.
@@ -110,26 +123,26 @@ fn build_shell(canvas_handle: SurfaceHandle, toolbar: Node) -> Node {
                 .text_color(Color::rgb(0x8B, 0x93, 0x9D)),
         );
 
+    let mut recent = node::column().gap(4.0);
+    for index in 0..14 {
+        let active = index == 0;
+        recent = recent.child(layer_row(&format!("Sketch {:02}", index + 1), active));
+    }
+
     let rail = node::column()
-        .width(Length::Px(148.0))
+        .width(Length::Px(180.0))
         .height(Length::Fill)
         .padding(Edges::all(10.0))
-        .gap(10.0)
+        .gap(8.0)
         .background(Color::rgb(0x23, 0x26, 0x29))
-        .child(section_title("LAYERS"))
-        .child(layer_row("Layer 1", true))
-        .child(layer_row("Sketch", false))
-        .child(layer_row("Colour", false))
+        .child(section_title("RECENT PROJECTS"))
         .child(
-            node::text(
-                "The canvas on the right is a direct surface. Its pixels are written in place by \
-                 another thread, and the layout pass decides how big it is.",
-            )
-            .wrap(true)
-            .font_size(11.0)
-            .margin(Edges::new(0.0, 16.0, 0.0, 0.0))
-            .text_color(Color::rgb(0x76, 0x7E, 0x88)),
-        );
+            node::column()
+                .height(Length::Fill)
+                .scrollable()
+                .child(recent),
+        )
+        .child(section_title("14 projects  •  wheel to scroll"));
 
     let canvas_panel = node::panel()
         .size(Length::Fill, Length::Fill)

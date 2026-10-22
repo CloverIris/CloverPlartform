@@ -7,7 +7,9 @@ repository so it can be reused elsewhere.
 
 ![CloverPlatform demo: XAML toolbar, declarative shell, direct-memory canvas](docs/screenshot.png)
 
-> Status: **0.2 — layout and focus**. The pipeline works end to end (tree →
+![The same layout scrolled four wheel notches](docs/screenshot-scroll.png)
+
+> Status: **0.3 — scrolling**. The pipeline works end to end (tree →
 > layout → display list → tile-parallel raster → frame), both authoring
 > front-ends produce the same tree, layout supports flex-style `Fill`, text
 > wraps, and keyboard focus is routed. Styles, templates, bindings and animation
@@ -30,6 +32,9 @@ repository so it can be reused elsewhere.
   rectangles and borders.
 * **Keyboard focus.** Tab / Shift+Tab traversal over focusable nodes, and key
   events routed through capture → target → bubble along the focused node.
+* **Scrolling.** Vertical scroll containers (`ScrollViewer`, `Node::scrollable`)
+  clamp their offset against the laid-out content and paint a scrollbar. Wheel
+  events route to the nearest scrollable ancestor.
 * **Interaction feedback.** Hovered surfaces lighten and pressed ones darken by
   default, with no per-widget code.
 * **Hosts.** A C ABI, exercised by CloverPic's macOS adapter; see
@@ -141,7 +146,7 @@ Near term:
 - text runs with mixed styles (bold spans, ellipsis, alignment per run),
 - XAML styles, templates, property elements and `{Binding}`,
 - focus visuals: the framework routes focus, skins still draw it,
-- scroll containers, so a `Fill` region can overflow,
+- horizontal scrolling and scroll-into-view on focus,
 - region-level opacity layers.
 
 Later:

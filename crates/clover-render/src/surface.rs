@@ -308,7 +308,31 @@ impl Surface {
                     clover_ui::PointerAction::Move => {}
                 }
             }
-            UiEvent::Wheel(_) => {}
+            UiEvent::Wheel(w) => {
+                // Scroll the nearest scrollable ancestor of what is under the
+                // pointer. Positive delta is wheel-up, which moves content down.
+                let chain = self.tree.hit_chain(w.position);
+                let target = chain.iter().copied().find(|id| {
+                    self.tree.node(*id).map(|n| n.scroll.enabled).unwrap_or(false)
+                });
+                if let Some(id) = target {
+                    const STEP: f32 = 40.0;
+                    let mut moved = false;
+                    let mut bounds = Rect::ZERO;
+                    if let Some(node) = self.tree.node_mut(id) {
+                        let max = node.scroll.max_offset(node.bounds.h);
+                        let next = (node.scroll.offset - w.delta * STEP).clamp(0.0, max);
+                        if (next - node.scroll.offset).abs() > 0.01 {
+                            node.scroll.offset = next;
+                            moved = true;
+                        }
+                        bounds = node.bounds;
+                    }
+                    if moved {
+                        self.tree.damage().add(bounds);
+                    }
+                }
+            }
             UiEvent::Key(k) => {
                 // Tab / Shift+Tab move keyboard focus before routing.
                 if k.action == clover_ui::KeyAction::Down && k.key == 0x09 && !k.repeat {
@@ -353,6 +377,48 @@ mod tests {
     fn frame_is_physical_size() {
         let surface = surface_with_button();
         assert_eq!((surface.canvas().width, surface.canvas().height), (200, 200));
+    }
+
+    #[test]
+    fn wheel_scrolls_the_nearest_scrollable_ancestor() {
+        let root = node::panel().background(Color::BLACK).child(
+            node::column()
+                .size(Length::Px(100.0), Length::Px(50.0))
+                .scrollable()
+                .background(Color::rgb(0x30, 0x30, 0x30))
+                .child(node::panel().size(Length::Fill, Length::Px(40.0)).background(Color::rgb(0xC0, 0x20, 0x20)))
+                .child(node::panel().size(Length::Fill, Length::Px(40.0)).background(Color::rgb(0x20, 0xC0, 0x20)))
+                .child(node::panel().size(Length::Fill, Length::Px(40.0)).background(Color::rgb(0x20, 0x20, 0xC0))),
+        );
+        let mut surface = Surface::new(root, 200.0, 120.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        let scroller = surface
+            .tree()
+            .root()
+            .children
+            .iter()
+            .find(|n| n.scroll.enabled)
+            .expect("scroll container");
+        assert_eq!(scroller.scroll.offset, 0.0);
+
+        // Wheel down (negative delta) over the scroll area.
+        surface.dispatch(UiEvent::Wheel(clover_ui::WheelEvent {
+            delta: -2.0,
+            position: Point::new(50.0, 30.0),
+            modifiers: clover_ui::Modifiers::NONE,
+        }));
+        let _ = surface.frame();
+        let scroller = surface
+            .tree()
+            .root()
+            .children
+            .iter()
+            .find(|n| n.scroll.enabled)
+            .unwrap();
+        assert!(scroller.scroll.offset > 0.0, "wheel down scrolls content up");
+        assert_eq!(scroller.scroll.offset, 70.0, "2 notches * 40px, clamped to content - viewport");
     }
 
     #[test]

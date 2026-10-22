@@ -61,6 +61,29 @@ pub enum View {
     Surface { handle: SurfaceHandle },
 }
 
+/// Scroll state for a container whose content may exceed its box.
+///
+/// Vertical only for now: the offset is clamped by the layout pass once the
+/// content height is known.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ScrollState {
+    pub enabled: bool,
+    /// Current vertical offset in logical pixels, `0..=max_offset`.
+    pub offset: f32,
+    /// Content height measured by the last layout pass.
+    pub content_height: f32,
+}
+
+impl ScrollState {
+    pub fn max_offset(&self, viewport_height: f32) -> f32 {
+        (self.content_height - viewport_height).max(0.0)
+    }
+
+    pub fn is_scrollable(&self, viewport_height: f32) -> bool {
+        self.enabled && self.max_offset(viewport_height) > 0.5
+    }
+}
+
 /// One node of the UI tree.
 #[derive(Clone, Debug)]
 pub struct Node {
@@ -79,6 +102,8 @@ pub struct Node {
     pub visible: bool,
     /// Participates in Tab traversal and can receive key events.
     pub focusable: bool,
+    /// Vertical scrolling state; only used when `scroll.enabled`.
+    pub scroll: ScrollState,
 }
 
 impl Default for Node {
@@ -95,6 +120,7 @@ impl Default for Node {
             state: NodeState::default(),
             visible: true,
             focusable: false,
+            scroll: ScrollState::default(),
         }
     }
 }
@@ -251,6 +277,14 @@ impl Node {
         self
     }
 
+    /// Makes this container vertically scrollable and clipping.
+    pub fn scrollable(mut self) -> Self {
+        self.scroll.enabled = true;
+        self.style.clip = true;
+        self.style.scroll_viewport = true;
+        self
+    }
+
     // ---- queries -------------------------------------------------------
 
     /// Depth-first search by id.
@@ -310,6 +344,23 @@ impl Node {
         for child in &self.children {
             child.walk(visit);
         }
+    }
+
+    /// Nearest scrollable ancestor of `id`, including `id` itself.
+    pub fn find_scrollable_ancestor(&self, id: NodeId) -> Option<NodeId> {
+        fn walk(node: &Node, target: NodeId, current: Option<NodeId>) -> Option<Option<NodeId>> {
+            let current = if node.scroll.enabled { Some(node.id) } else { current };
+            if node.id == target {
+                return Some(current);
+            }
+            for child in &node.children {
+                if let Some(found) = walk(child, target, current) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        walk(self, id, None).flatten()
     }
 
     /// Collects focusable, visible nodes in depth-first (tab) order.

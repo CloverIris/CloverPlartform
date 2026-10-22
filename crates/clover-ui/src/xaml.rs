@@ -16,6 +16,7 @@
 //! | `TextBlock` | `Text` attribute or inner text |
 //! | `Button` | `Content` |
 //! | `Image` | `Source` resolved through an [`ImageResolver`] |
+//! | `ScrollViewer` | vertical scrolling container |
 //! | `CloverSurface` | `Id`, a direct-memory child surface |
 //!
 //! ## Not yet
@@ -311,6 +312,7 @@ fn build(xml: &XmlNode, images: &dyn ImageResolver) -> Result<Node, XamlError> {
         }
         "canvas" => node::stack(Orientation::Vertical).align(Align::Start).justify(Align::Start),
         "border" => node::panel(),
+        "scrollviewer" => node::column().scrollable(),
         "panel" | "stack" => node::panel(),
         "textblock" | "text" | "label" => {
             let content = xml
@@ -619,6 +621,17 @@ mod tests {
     fn rejects_mismatched_close() {
         let error = parse("<StackPanel></Border>", &NoImages).unwrap_err();
         assert!(error.message.contains("closes"));
+    }
+
+    #[test]
+    fn parses_scroll_viewer() {
+        let root = parse(
+            r#"<ScrollViewer Height="120"><TextBlock Text="a"/></ScrollViewer>"#,
+            &NoImages,
+        )
+        .unwrap();
+        assert!(root.scroll.enabled);
+        assert!(root.style.clip, "scroll containers clip their content");
     }
 
     #[test]

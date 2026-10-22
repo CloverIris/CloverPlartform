@@ -138,6 +138,10 @@ uint64_t clover_surface_pointer(clover_surface *surface, float x, float y,
 uint64_t clover_surface_key(clover_surface *surface, uint32_t key, clover_key_action action,
                             uint32_t modifiers, bool repeat);
 
+/* Wheel / trackpad scroll. Positive delta is wheel-up. */
+clover_result clover_surface_wheel(clover_surface *surface, float x, float y, float delta,
+                                   uint32_t modifiers);
+
 /* Returns the focused node id, or 0. */
 uint64_t clover_surface_focus(clover_surface *surface);
 

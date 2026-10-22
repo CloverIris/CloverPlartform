@@ -224,6 +224,28 @@ pub unsafe extern "C" fn clover_surface_key(
     surface.surface.tree().focus().map(|id| id.0).unwrap_or(0)
 }
 
+/// Pushes a wheel event. Scrolling is applied to the nearest scrollable
+/// ancestor of the node under `(x, y)`. Positive `delta` is wheel-up.
+///
+/// # Safety
+/// `surface` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_wheel(
+    surface: *mut CloverSurface,
+    x: f32,
+    y: f32,
+    delta: f32,
+    modifiers: u32,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    surface.surface.dispatch(clover_ui::UiEvent::Wheel(clover_ui::WheelEvent {
+        delta,
+        position: clover_core::Point::new(x, y),
+        modifiers: clover_ui::Modifiers(modifiers),
+    }));
+    CloverResult::Ok
+}
+
 /// Returns the id of the focused node, or 0.
 ///
 /// # Safety

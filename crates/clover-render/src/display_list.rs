@@ -196,6 +196,53 @@ fn walk(
     for child in &node.children {
         walk(child, scale, child_clip, out, text, images);
     }
+
+    // The scrollbar paints on top of the content it belongs to.
+    if node.scroll.enabled {
+        push_scrollbar(node, rect, scale, child_clip, out);
+    }
+}
+
+fn push_scrollbar(node: &Node, rect: Rect, scale: f32, clip: Rect, out: &mut Vec<DrawCmd>) {
+    let viewport = node.bounds.h;
+    let content = node.scroll.content_height;
+    if content <= viewport + 0.5 || viewport <= 0.0 {
+        return;
+    }
+    let bar_width = (6.0 * scale).max(3.0);
+    let inset = 2.0 * scale;
+    let track = Rect::new(
+        rect.right() - bar_width - inset,
+        rect.y + inset,
+        bar_width,
+        (rect.h - inset * 2.0).max(1.0),
+    );
+    if track.is_empty() {
+        return;
+    }
+    out.push(DrawCmd::RoundedRect {
+        rect: track,
+        radius: bar_width * 0.5,
+        color: Color::rgba(255, 255, 255, 18).premultiply(),
+        clip,
+    });
+
+    let visible_ratio = (viewport / content).clamp(0.0, 1.0);
+    let thumb_height = (track.h * visible_ratio).max(bar_width * 2.0).min(track.h);
+    let max_offset = (content - viewport).max(0.001);
+    let progress = (node.scroll.offset / max_offset).clamp(0.0, 1.0);
+    let thumb = Rect::new(
+        track.x,
+        track.y + (track.h - thumb_height) * progress,
+        track.w,
+        thumb_height,
+    );
+    out.push(DrawCmd::RoundedRect {
+        rect: thumb,
+        radius: bar_width * 0.5,
+        color: Color::rgba(255, 255, 255, 72).premultiply(),
+        clip,
+    });
 }
 
 /// Fits an image of `natural` size into `box_rect` according to `fit`.

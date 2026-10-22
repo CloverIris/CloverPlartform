@@ -115,6 +115,15 @@ pub fn measure(node: &Node, available: Size, metrics: &dyn LayoutMetrics) -> Siz
         View::Surface { .. } | View::Empty => {}
     }
 
+    // A scroll container is a viewport: it must never ask to be taller than the
+    // space it was offered, or its content inflates the ancestors and `Fill`
+    // resolves to the content height - a feedback loop that makes scrolling
+    // impossible.
+    if style.scroll_viewport() && !horizontal {
+        let cap = (available.h - padding.vertical()).max(0.0);
+        content.h = content.h.min(cap);
+    }
+
     let width = explicit_w.unwrap_or(content.w + padding.horizontal()).max(0.0);
     let height = explicit_h.unwrap_or(content.h + padding.vertical()).max(0.0);
 
@@ -206,6 +215,28 @@ fn arrange(node: &mut Node, border_box: Rect, metrics: &dyn LayoutMetrics) {
         0.0
     };
 
+    // 3b. Scrolling: measure the content, clamp the offset, and lay children out
+    // in a box that is taller than the viewport and shifted by the offset.
+    let mut layout_origin = content_box.origin();
+    if node.scroll.enabled && !horizontal {
+        let mut total = 0.0f32;
+        let mut counted = 0usize;
+        for (child, size) in node.children.iter().zip(&sizes) {
+            if !child.visible {
+                continue;
+            }
+            total += size.h + child.style.margin.vertical();
+            counted += 1;
+        }
+        if counted > 1 {
+            total += gap * (counted - 1) as f32;
+        }
+        node.scroll.content_height = total;
+        let max_offset = node.scroll.max_offset(content_size.h);
+        node.scroll.offset = node.scroll.offset.clamp(0.0, max_offset);
+        layout_origin.y = content_box.y - node.scroll.offset;
+    }
+
     // 4. Place children.
     for (index, child) in node.children.iter_mut().enumerate() {
         if !child.visible {
@@ -246,9 +277,9 @@ fn arrange(node: &mut Node, border_box: Rect, metrics: &dyn LayoutMetrics) {
         };
 
         let (x, y) = if horizontal {
-            (content_box.x + cursor + margin.left, content_box.y + cross_offset + margin.top)
+            (layout_origin.x + cursor + margin.left, layout_origin.y + cross_offset + margin.top)
         } else {
-            (content_box.x + cross_offset + margin.left, content_box.y + cursor + margin.top)
+            (layout_origin.x + cross_offset + margin.left, layout_origin.y + cursor + margin.top)
         };
 
         arrange(child, Rect::new(x, y, child_w, child_h), metrics);
@@ -482,6 +513,63 @@ mod tests {
         let row = &root.children[0];
         assert_eq!(row.bounds.h, 80.0);
         assert_eq!(row.children[0].bounds.w, 100.0, "inner fill spans the row");
+    }
+
+    #[test]
+    fn scrollable_container_measures_content() {
+        let mut root = node::column()
+            .size(Length::Px(100.0), Length::Px(50.0))
+            .scrollable()
+            .child(node::panel().size(Length::Auto, Length::Px(40.0)))
+            .child(node::panel().size(Length::Auto, Length::Px(40.0)))
+            .child(node::panel().size(Length::Auto, Length::Px(40.0)));
+        layout(&mut root, size(100.0, 50.0), &EmptyMetrics);
+        assert_eq!(root.scroll.content_height, 120.0);
+        assert_eq!(root.scroll.max_offset(50.0), 70.0);
+        assert!(root.scroll.is_scrollable(50.0));
+    }
+
+    #[test]
+    fn scroll_offset_shifts_children_up() {
+        let mut root = node::column()
+            .size(Length::Px(100.0), Length::Px(50.0))
+            .scrollable()
+            .child(node::panel().size(Length::Auto, Length::Px(40.0)))
+            .child(node::panel().size(Length::Auto, Length::Px(40.0)));
+        layout(&mut root, size(100.0, 50.0), &EmptyMetrics);
+        assert_eq!(root.scroll.content_height, 80.0);
+        assert_eq!(root.children[1].bounds.y, 40.0);
+
+        root.scroll.offset = 20.0;
+        layout(&mut root, size(100.0, 50.0), &EmptyMetrics);
+        assert_eq!(root.children[0].bounds.y, -20.0, "content shifts up by the offset");
+        assert_eq!(root.children[1].bounds.y, 20.0);
+
+        root.scroll.offset = 999.0;
+        layout(&mut root, size(100.0, 50.0), &EmptyMetrics);
+        assert_eq!(root.scroll.offset, 30.0, "offset clamps to content - viewport");
+    }
+
+    #[test]
+    fn scroll_viewport_never_inflates_its_parent() {
+        // An Auto-height parent holding a Fill-height scroll viewport used to
+        // resolve Fill against the content height, making the viewport as tall as
+        // its content and therefore unscrollable.
+        let mut root = node::column().size(Length::Px(100.0), Length::Px(100.0)).child(
+            node::column().child(
+                node::column()
+                    .height(Length::Fill)
+                    .scrollable()
+                    .child(node::panel().size(Length::Auto, Length::Px(40.0)))
+                    .child(node::panel().size(Length::Auto, Length::Px(40.0)))
+                    .child(node::panel().size(Length::Auto, Length::Px(40.0))),
+            ),
+        );
+        layout(&mut root, size(100.0, 100.0), &EmptyMetrics);
+        let viewport = &root.children[0].children[0];
+        assert_eq!(viewport.bounds.h, 100.0, "viewport is capped by the offered height");
+        assert_eq!(viewport.scroll.content_height, 120.0);
+        assert!(viewport.scroll.is_scrollable(viewport.bounds.h), "content exceeds the viewport");
     }
 
     #[test]

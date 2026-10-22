@@ -115,6 +115,9 @@ pub struct Style {
     pub clip: bool,
     /// Break text onto multiple lines to fit the content box.
     pub wrap: bool,
+    /// Behaves as a scroll viewport during measurement: never reports content
+    /// taller than the space it was offered. Set by `Node::scrollable`.
+    pub scroll_viewport: bool,
 }
 
 impl Default for Style {
@@ -142,12 +145,18 @@ impl Default for Style {
             opacity: 1.0,
             clip: false,
             wrap: false,
+            scroll_viewport: false,
         }
     }
 }
 
 impl Style {
     /// Applies min/max constraints to a measured extent.
+    /// See [`Style::scroll_viewport`].
+    pub fn scroll_viewport(&self) -> bool {
+        self.scroll_viewport
+    }
+
     pub fn clamp_width(&self, value: f32) -> f32 {
         let mut v = value;
         if let Some(min) = self.min_width {
