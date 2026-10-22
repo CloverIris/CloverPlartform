@@ -108,6 +108,38 @@ pub fn text_input_display(
 }
 
 
+/// A running interpolation on a node.
+///
+/// Only opacity and background colour animate today. The state lives on the node
+/// so the display list needs no clock: `Surface::advance` writes the eased value
+/// into `Style` and damages the node.
+#[derive(Clone, Copy, Debug)]
+pub struct Animation {
+    pub start_ms: u64,
+    pub duration_ms: u64,
+    pub from_opacity: f32,
+    pub to_opacity: f32,
+    pub from_background: Color,
+    pub to_background: Color,
+}
+
+impl Animation {
+    /// Eased progress in `0.0..=1.0` at `now_ms`.
+    pub fn progress(&self, now_ms: u64) -> f32 {
+        if self.duration_ms == 0 {
+            return 1.0;
+        }
+        let elapsed = now_ms.saturating_sub(self.start_ms) as f32;
+        let t = (elapsed / self.duration_ms as f32).clamp(0.0, 1.0);
+        // Smoothstep: cheap, and avoids the visible jerk of linear easing.
+        t * t * (3.0 - 2.0 * t)
+    }
+
+    pub fn is_finished(&self, now_ms: u64) -> bool {
+        self.duration_ms == 0 || now_ms.saturating_sub(self.start_ms) >= self.duration_ms
+    }
+}
+
 /// Scroll state for a container whose content may exceed its box.
 ///
 /// Vertical only for now: the offset is clamped by the layout pass once the
@@ -151,6 +183,8 @@ pub struct Node {
     pub focusable: bool,
     /// Vertical scrolling state; only used when `scroll.enabled`.
     pub scroll: ScrollState,
+    /// Running animation, applied by `Surface::advance`.
+    pub animation: Option<Animation>,
     /// Style classes matched by `Selector::Class`.
     pub classes: Vec<String>,
     /// Command identifier reported to the host when this node is activated.
@@ -175,6 +209,7 @@ impl Default for Node {
             visible: true,
             focusable: false,
             scroll: ScrollState::default(),
+            animation: None,
             classes: Vec::new(),
             action: None,
         }
@@ -284,6 +319,12 @@ impl Node {
 
     pub fn background(mut self, color: Color) -> Self {
         self.style.background = color;
+        self
+    }
+
+    /// Fills the background with a gradient.
+    pub fn brush(mut self, brush: crate::style::Brush) -> Self {
+        self.style.brush = Some(brush);
         self
     }
 

@@ -74,10 +74,15 @@ pub struct StyleRule {
     pub props: StyleProps,
 }
 
-/// An ordered collection of rules.
+/// An ordered collection of rules, plus named control templates.
+///
+/// A template is stored as raw markup and instantiated on demand, so the sheet
+/// stays a value type and templates can bind against the control they are
+/// applied to.
 #[derive(Clone, Debug, Default)]
 pub struct StyleSheet {
     rules: Vec<StyleRule>,
+    templates: std::collections::HashMap<String, String>,
 }
 
 impl StyleSheet {
@@ -91,6 +96,29 @@ impl StyleSheet {
 
     pub fn len(&self) -> usize {
         self.rules.len()
+    }
+
+    /// Registers a template body under `key`.
+    pub fn push_template(&mut self, key: impl Into<String>, source: impl Into<String>) {
+        self.templates.insert(key.into(), source.into());
+    }
+
+    /// The markup for `key`, if a template with that key exists.
+    pub fn template(&self, key: &str) -> Option<&str> {
+        self.templates.get(key).map(String::as_str)
+    }
+
+    pub fn template_count(&self) -> usize {
+        self.templates.len()
+    }
+
+    /// Appends another sheet's rules and templates.
+    ///
+    /// A `.cui` document may declare several `<Styles>` blocks; they contribute,
+    /// they do not replace each other.
+    pub fn merge(&mut self, other: StyleSheet) {
+        self.rules.extend(other.rules);
+        self.templates.extend(other.templates);
     }
 
     pub fn is_empty(&self) -> bool {

@@ -161,6 +161,20 @@ fn parse_styles_node(node: &XmlNode) -> Result<crate::style_sheet::StyleSheet, X
 
     let mut sheet = StyleSheet::new();
     for child in &node.children {
+        if child.name.eq_ignore_ascii_case("Template") {
+            let Some(key) = child.attr("x:Key").or(child.attr("Key")) else {
+                return err(child.offset, "<Template> needs x:Key");
+            };
+            let mut body = String::new();
+            for element in &child.children {
+                node_to_xml(element, &mut body);
+            }
+            if body.is_empty() {
+                return err(child.offset, "<Template> needs a body");
+            }
+            sheet.push_template(key, body);
+            continue;
+        }
         if !child.name.eq_ignore_ascii_case("Style") {
             return err(child.offset, format!("unsupported element <{}> in <Styles>", child.name));
         }
@@ -290,7 +304,7 @@ impl UiDocument {
                     data.insert(key, value);
                 }
             } else if name == "styles" {
-                sheet = parse_styles_node(child)?;
+                sheet.merge(parse_styles_node(child)?);
             } else if name == "resources" {
                 for entry in &child.children {
                     if !entry.name.eq_ignore_ascii_case("Image") {
@@ -524,6 +538,40 @@ fn parse_xml(source: &str) -> Result<XmlNode, XamlError> {
     }
 }
 
+/// Re-emits a parsed element as markup, so a `<Template>` body can be
+/// instantiated once per control.
+fn node_to_xml(node: &XmlNode, out: &mut String) {
+    out.push('<');
+    out.push_str(&node.name);
+    for (name, value) in &node.attrs {
+        out.push(' ');
+        out.push_str(name);
+        out.push_str("=\"");
+        for ch in value.chars() {
+            match ch {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' => out.push_str("&quot;"),
+                other => out.push(other),
+            }
+        }
+        out.push('"');
+    }
+    if node.children.is_empty() && node.text.is_empty() {
+        out.push_str("/>");
+        return;
+    }
+    out.push('>');
+    out.push_str(&node.text);
+    for child in &node.children {
+        node_to_xml(child, out);
+    }
+    out.push_str("</");
+    out.push_str(&node.name);
+    out.push('>');
+}
+
 fn push_node(stack: &mut Vec<XmlNode>, roots: &mut Vec<XmlNode>, node: XmlNode) {
     match stack.last_mut() {
         Some(parent) => parent.children.push(node),
@@ -650,6 +698,35 @@ fn build(
     }
 
     apply_common_attributes(&mut node, xml, context)?;
+
+    if let Some(key) = xml.attr("Template") {
+        let template_source = context
+            .sheet
+            .template(key)
+            .ok_or_else(|| XamlError { message: format!("unknown template '{key}'"), offset: xml.offset })?
+            .to_string();
+        // The template owns the visual, so the control stops drawing its own
+        // background, border and label.
+        let content = xml
+            .attr("Content")
+            .or_else(|| xml.attr("Text"))
+            .map(|value| context.data.resolve_text(value))
+            .unwrap_or_else(|| context.data.resolve_text(&xml.text));
+        let tag = xml.attr("Tag").map(|value| context.data.resolve_text(value)).unwrap_or_default();
+        let name = node.name.clone().unwrap_or_default();
+
+        let scope = crate::binding::DataContext::new()
+            .set("Content", crate::binding::Value::Text(content))
+            .set("Tag", crate::binding::Value::Text(tag))
+            .set("Name", crate::binding::Value::Text(name));
+
+        let template_node = parse_with_data(&template_source, context.images, context.sheet, &scope)?;
+        node.style.background = clover_core::Color::TRANSPARENT;
+        node.style.brush = None;
+        node.style.border_width = 0.0;
+        node.view = crate::node::View::Empty;
+        node.children = vec![template_node];
+    }
     if let Some(v) = xml.attr_f32("FontSize") {
         ctx.font_size = v;
     }
@@ -792,6 +869,28 @@ fn apply_common_attributes(
     if let Some(v) = xml.attr("Spacing").and_then(|v| v.trim().parse::<f32>().ok()) {
         node.style.gap = v;
     }
+    if let Some(kind) = xml.attr("BackgroundGradient") {
+        let stops = xml
+            .attr("GradientStops")
+            .map(|raw| parse_gradient_stops(raw, xml.offset))
+            .transpose()?
+            .unwrap_or_default();
+        if stops.len() < 2 {
+            return err(xml.offset, "BackgroundGradient needs at least two GradientStops");
+        }
+        let geometry = if kind.trim().eq_ignore_ascii_case("radial") {
+            let center = xml
+                .attr("GradientCenter")
+                .and_then(parse_pair)
+                .unwrap_or((0.5, 0.5));
+            let radius = xml.attr_f32("GradientRadius").unwrap_or(0.7);
+            crate::style::GradientGeometry::Radial { center, radius }
+        } else {
+            let angle = xml.attr_f32("GradientAngle").unwrap_or(90.0);
+            crate::style::GradientGeometry::Linear { angle }
+        };
+        node.style.brush = Some(crate::style::Brush::Gradient { geometry, stops });
+    }
     if let Some(raw) = xml.attr("BackgroundImage") {
         let source = static_resource_key(raw).unwrap_or(raw);
         match context.images.resolve(&context.data.resolve_text(source)) {
@@ -874,6 +973,36 @@ fn apply_common_attributes(
 enum AttrTarget {
     Width,
     Height,
+}
+
+/// Parses `"0:#204060,1:#102030"` into gradient stops.
+fn parse_gradient_stops(
+    raw: &str,
+    offset: usize,
+) -> Result<Vec<crate::style::GradientStop>, XamlError> {
+    let mut stops = Vec::new();
+    for entry in raw.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let Some((position, color)) = entry.split_once(':') else {
+            return err(offset, format!("gradient stop '{entry}' needs offset:colour"));
+        };
+        let position = position
+            .trim()
+            .parse::<f32>()
+            .map_err(|_| XamlError { message: format!("bad stop offset '{position}'"), offset })?;
+        stops.push(crate::style::GradientStop::new(position, parse_color(color, offset)?));
+    }
+    stops.sort_by(|a, b| a.offset.partial_cmp(&b.offset).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(stops)
+}
+
+/// Parses `"0.5,0.5"`.
+fn parse_pair(raw: &str) -> Option<(f32, f32)> {
+    let (first, second) = raw.split_once(',')?;
+    Some((first.trim().parse().ok()?, second.trim().parse().ok()?))
 }
 
 fn parse_align(value: &str) -> Align {
@@ -973,6 +1102,111 @@ mod tests {
         assert_eq!(static_resource_key("{ StaticResource logo }"), Some("logo"));
         assert_eq!(static_resource_key("logo"), Some("logo"));
         assert_eq!(static_resource_key("{}"), None);
+    }
+
+    const TEMPLATED: &str = r##"
+<Styles>
+  <Style TargetType="Button" CornerRadius="6"/>
+  <Template x:Key="pill">
+    <Border Background="#2F6FD0" CornerRadius="14" Padding="18,9">
+      <TextBlock Text="{Binding Content}" Foreground="#FFFFFF"/>
+    </Border>
+  </Template>
+  <Template x:Key="badge">
+    <Panel Background="#333A42" CornerRadius="4" Padding="8,4">
+      <TextBlock Text="{Binding Content} / {Binding Tag}" Foreground="#E8ECF0"/>
+    </Panel>
+  </Template>
+</Styles>"##;
+
+    #[test]
+    fn template_replaces_the_control_visual() {
+        let sheet = parse_stylesheet(TEMPLATED).unwrap();
+        assert_eq!(sheet.template_count(), 2);
+        let page = parse_with_styles(r#"<Button Content="Save" Template="pill"/>"#, &NoImages, &sheet).unwrap();
+        assert_eq!(page.children.len(), 1, "template becomes the only child");
+        let template_root = &page.children[0];
+        assert_eq!(template_root.style.radius, 14.0);
+        // The control no longer paints its own background or label.
+        assert_eq!(page.style.background, Color::TRANSPARENT);
+        assert_eq!(page.view, node::View::Empty);
+        assert_eq!(template_root.children[0].view, node::View::Text("Save".into()));
+    }
+
+    #[test]
+    fn template_can_bind_tag_as_well_as_content() {
+        let sheet = parse_stylesheet(TEMPLATED).unwrap();
+        let page = parse_with_styles(
+            r#"<Button Content="v1" Tag="beta" Template="badge"/>"#,
+            &NoImages,
+            &sheet,
+        )
+        .unwrap();
+        assert_eq!(page.children[0].children[0].view, node::View::Text("v1 / beta".into()));
+    }
+
+    #[test]
+    fn unknown_template_is_an_error() {
+        let sheet = parse_stylesheet(TEMPLATED).unwrap();
+        assert!(parse_with_styles(r#"<Button Content="x" Template="nope"/>"#, &NoImages, &sheet).is_err());
+    }
+
+    #[test]
+    fn templates_require_a_key_and_a_body() {
+        assert!(parse_stylesheet(r#"<Styles><Template><Panel/></Template></Styles>"#).is_err());
+        assert!(parse_stylesheet(r#"<Styles><Template x:Key="x"></Template></Styles>"#).is_err());
+    }
+
+    #[test]
+    fn parses_gradient_brushes() {
+        let page = parse(
+            r##"<Panel BackgroundGradient="Linear" GradientAngle="0"
+                      GradientStops="0:#FF0000, 1:#0000FF"/>"##,
+            &NoImages,
+        )
+        .unwrap();
+        match &page.style.brush {
+            Some(crate::style::Brush::Gradient { geometry, stops }) => {
+                assert_eq!(*geometry, crate::style::GradientGeometry::Linear { angle: 0.0 });
+                assert_eq!(stops.len(), 2);
+                assert_eq!(stops[0].color, Color::rgb(255, 0, 0));
+                assert_eq!(stops[1].offset, 1.0);
+            }
+            other => panic!("expected a gradient, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gradient_stops_are_sorted_and_validated() {
+        let page = parse(
+            r##"<Panel BackgroundGradient="Linear" GradientStops="1:#000000,0:#FFFFFF"/>"##,
+            &NoImages,
+        )
+        .unwrap();
+        if let Some(crate::style::Brush::Gradient { stops, .. }) = &page.style.brush {
+            assert_eq!(stops[0].offset, 0.0, "stops are sorted by offset");
+        }
+        assert!(parse(r##"<Panel BackgroundGradient="Linear" GradientStops="0:#FFF"/>"##, &NoImages).is_err());
+        assert!(parse(r##"<Panel BackgroundGradient="Linear" GradientStops="nope"/>"##, &NoImages).is_err());
+    }
+
+    #[test]
+    fn parses_radial_gradients() {
+        let page = parse(
+            r##"<Panel BackgroundGradient="Radial" GradientCenter="0.4,0.6" GradientRadius="0.5"
+                      GradientStops="0:#FFFFFF,1:#000000"/>"##,
+            &NoImages,
+        )
+        .unwrap();
+        match &page.style.brush {
+            Some(crate::style::Brush::Gradient { geometry, .. }) => {
+                assert_eq!(
+                    *geometry,
+                    crate::style::GradientGeometry::Radial { center: (0.4, 0.6), radius: 0.5 }
+                );
+            }
+            other => panic!("expected a radial gradient, got {other:?}"),
+        }
     }
 
     #[test]

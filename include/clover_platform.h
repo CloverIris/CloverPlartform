@@ -255,6 +255,19 @@ clover_result clover_surface_ime_cancel(clover_surface *surface);
 clover_result clover_surface_ime_insert(clover_surface *surface, const char *text_utf8);
 clover_result clover_surface_caret_rect(clover_surface *surface, clover_rect *out);
 
+/*
+ * Animation
+ * ---------
+ * Opacity and background colour can be eased towards a target. The host calls
+ * `clover_surface_advance` every frame; it returns true while anything is still
+ * moving, so the host can stop requesting frames afterwards.
+ */
+clover_result clover_surface_animate_opacity(clover_surface *surface, const char *name_utf8,
+                                             float target, uint64_t duration_ms, uint64_t now_ms);
+clover_result clover_surface_animate_background(clover_surface *surface, const char *name_utf8,
+                                                uint32_t rgba, uint64_t duration_ms, uint64_t now_ms);
+bool clover_surface_advance(clover_surface *surface, uint64_t now_ms);
+
 /* Registers a PNG image and returns its handle, or 0 on failure. */
 uint64_t clover_surface_add_image_png(clover_surface *surface, const char *path_utf8);
 

@@ -533,6 +533,48 @@ impl Surface {
         }
     }
 
+    /// Starts animating a named node's opacity towards `target`.
+    pub fn animate_opacity(&mut self, name: &str, target: f32, duration_ms: u64, now_ms: u64) -> bool {
+        self.start_animation(name, StyleTarget::Opacity(target.clamp(0.0, 1.0)), duration_ms, now_ms)
+    }
+
+    /// Starts animating a named node's background colour towards `target`.
+    pub fn animate_background(&mut self, name: &str, target: clover_core::Color, duration_ms: u64, now_ms: u64) -> bool {
+        self.start_animation(name, StyleTarget::Background(target), duration_ms, now_ms)
+    }
+
+    fn start_animation(&mut self, name: &str, target: StyleTarget, duration_ms: u64, now_ms: u64) -> bool {
+        let Some(node) = self.tree.named_mut(name) else { return false };
+        let mut animation = clover_ui::node::Animation {
+            start_ms: now_ms,
+            duration_ms,
+            from_opacity: node.style.opacity,
+            to_opacity: node.style.opacity,
+            from_background: node.style.background,
+            to_background: node.style.background,
+        };
+        match target {
+            StyleTarget::Opacity(value) => animation.to_opacity = value,
+            StyleTarget::Background(color) => animation.to_background = color,
+        }
+        node.animation = Some(animation);
+        true
+    }
+
+    /// Advances every running animation to `now_ms`.
+    ///
+    /// Returns `true` while any animation is still running, so a host can keep
+    /// requesting frames and then stop.
+    pub fn advance(&mut self, now_ms: u64) -> bool {
+        let mut changed: Vec<Rect> = Vec::new();
+        let mut active = false;
+        advance_node(self.tree.root_mut(), now_ms, &mut changed, &mut active);
+        for rect in changed {
+            self.tree.damage().add(rect);
+        }
+        active
+    }
+
     /// Pops the next action raised by input, if any.
     pub fn take_action(&mut self) -> Option<String> {
         if self.pending_actions.is_empty() {
@@ -644,6 +686,29 @@ impl Surface {
     }
 }
 
+enum StyleTarget {
+    Opacity(f32),
+    Background(clover_core::Color),
+}
+
+fn advance_node(node: &mut Node, now_ms: u64, changed: &mut Vec<Rect>, active: &mut bool) {
+    if let Some(animation) = node.animation {
+        let progress = animation.progress(now_ms);
+        node.style.opacity = animation.from_opacity
+            + (animation.to_opacity - animation.from_opacity) * progress;
+        node.style.background = animation.from_background.lerp(animation.to_background, progress);
+        changed.push(node.bounds);
+        if animation.is_finished(now_ms) {
+            node.animation = None;
+        } else {
+            *active = true;
+        }
+    }
+    for child in &mut node.children {
+        advance_node(child, now_ms, changed, active);
+    }
+}
+
 fn previous_boundary(text: &str, position: usize) -> usize {
     let mut index = position.saturating_sub(1);
     while index > 0 && !text.is_char_boundary(index) {
@@ -731,6 +796,49 @@ mod tests {
         while surface.take_action().is_some() {}
         press(&mut surface, 0x0D); // enter
         assert_eq!(surface.take_action().as_deref(), Some("submit:search"));
+    }
+
+    #[test]
+    fn animation_eases_towards_the_target_and_finishes() {
+        let root = node::panel().child(node::panel().name("fade").background(Color::BLACK));
+        let mut surface = Surface::new(root, 100.0, 100.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        assert!(surface.animate_opacity("fade", 0.0, 100, 1_000));
+        assert!(surface.advance(1_000), "animation is running at t=0");
+        let start = surface.tree().named("fade").unwrap().style.opacity;
+        assert!((start - 1.0).abs() < 0.01);
+
+        assert!(surface.advance(1_050), "still running at the midpoint");
+        let mid = surface.tree().named("fade").unwrap().style.opacity;
+        assert!(mid < 1.0 && mid > 0.0, "eased value should be between, got {mid}");
+
+        assert!(!surface.advance(1_200), "finished after the duration");
+        let end = surface.tree().named("fade").unwrap().style.opacity;
+        assert!(end.abs() < 0.001, "lands exactly on the target, got {end}");
+        assert!(surface.tree().named("fade").unwrap().animation.is_none());
+    }
+
+    #[test]
+    fn background_animation_interpolates_colour() {
+        let root = node::panel().child(node::panel().name("tint").background(Color::BLACK));
+        let mut surface = Surface::new(root, 100.0, 100.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        assert!(surface.animate_background("tint", Color::WHITE, 100, 0));
+        surface.advance(50);
+        let color = surface.tree().named("tint").unwrap().style.background;
+        assert!(color.r > 100 && color.r < 255, "mid-way between black and white, got {color:?}");
+    }
+
+    #[test]
+    fn animating_an_unknown_node_is_a_no_op() {
+        let root = node::panel();
+        let mut surface = Surface::new(root, 100.0, 100.0, 1.0).expect("system font required");
+        assert!(!surface.animate_opacity("missing", 0.5, 100, 0));
+        assert!(!surface.advance(10));
     }
 
     #[test]

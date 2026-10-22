@@ -57,6 +57,28 @@ impl Length {
     }
 }
 
+/// One colour stop in a gradient, `offset` in `0.0..=1.0`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GradientStop {
+    pub offset: f32,
+    pub color: Color,
+}
+
+impl GradientStop {
+    pub fn new(offset: f32, color: Color) -> Self {
+        Self { offset: offset.clamp(0.0, 1.0), color }
+    }
+}
+
+/// Where a gradient starts and ends, in normalised box coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GradientGeometry {
+    /// `angle` in degrees: 0 points right, 90 points down.
+    Linear { angle: f32 },
+    /// Centre and radius as fractions of the box, `0.5,0.5` / `0.7` by default.
+    Radial { center: (f32, f32), radius: f32 },
+}
+
 /// How a control's background is painted.
 ///
 /// The solid case stays a plain colour so the common path never touches the
@@ -73,11 +95,26 @@ pub enum Brush {
         /// Multiplied into the texture's alpha.
         opacity: f32,
     },
+    /// A linear or radial gradient across the background box.
+    Gradient {
+        geometry: GradientGeometry,
+        stops: Vec<GradientStop>,
+    },
 }
 
 impl Brush {
     pub fn solid(color: Color) -> Self {
         Brush::Solid(color)
+    }
+
+    /// A linear gradient at `angle` degrees (0 = right, 90 = down).
+    pub fn linear(angle: f32, stops: Vec<GradientStop>) -> Self {
+        Brush::Gradient { geometry: GradientGeometry::Linear { angle }, stops }
+    }
+
+    /// A radial gradient centred at `center` (0..1) with `radius` (0..1).
+    pub fn radial(center: (f32, f32), radius: f32, stops: Vec<GradientStop>) -> Self {
+        Brush::Gradient { geometry: GradientGeometry::Radial { center, radius }, stops }
     }
 }
 

@@ -143,6 +143,34 @@ Today `hdr_raster` is false, so an HDR request lands on `Bgra8Sdr` with
 silent one — the whole point of recording the reason is that a host can surface
 it and a future float raster path only has to flip one flag.
 
+## 5d. Gradients
+
+A gradient is a brush, not a separate draw path: `Brush::Gradient { geometry,
+stops }` renders through the same command as a textured or solid background, and
+the rasteriser antialiases it with the rounded-rect SDF. Linear geometry is an
+angle across the box, radial is a normalised centre and reach, so a `.cui` file
+never carries pixel coordinates that break on resize.
+
+## 5e. Templates
+
+A template is stored as raw markup inside the stylesheet and instantiated once
+per control. That keeps `StyleSheet` a plain value type, lets a template be
+re-parsed with the control's own data context (`Content`, `Tag`, `Name`), and
+means templates compose with bindings for free.
+
+When a control carries `Template=`, it stops drawing its own background, border
+and label: the template owns the visual. The layout box still belongs to the
+control, so a template cannot change where the control sits.
+
+## 5f. Animation
+
+Animations live on the node (`Node::animation`) rather than in a global
+timeline, so the display list needs no clock: `Surface::advance(now_ms)` writes
+the eased value into `Style` and damages the node.
+
+`advance` returns whether anything is still running, which is what lets a host
+stop asking for frames. Smoothstep easing is applied once, in `Animation::progress`.
+
 ## 5c. StyleBrush
 
 A background is either a solid colour or a texture. Solid stays a plain colour so

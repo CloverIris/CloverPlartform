@@ -192,12 +192,44 @@ fn render_tile(list: &DisplayList, tile: Rect, clear: Premul) -> Canvas {
                     draw_glyph(&mut canvas, glyph.x + dx, glyph.y + dy, &glyph.bitmap, *color, c);
                 }
             }
+            DrawCmd::Gradient { rect, radius, geometry, stops, clip } => {
+                let r = rect.offset(dx, dy);
+                let c = clip.offset(dx, dy).intersect(local_bounds);
+                if c.is_empty() {
+                    continue;
+                }
+                match geometry {
+                    clover_ui::style::GradientGeometry::Linear { angle } => {
+                        let (from, to) = linear_axis(r, *angle);
+                        canvas.fill_linear_gradient(r, *radius, from, to, stops, c);
+                    }
+                    clover_ui::style::GradientGeometry::Radial { center, radius: reach } => {
+                        let cx = r.x + r.w * center.0.clamp(0.0, 1.0);
+                        let cy = r.y + r.h * center.1.clamp(0.0, 1.0);
+                        let reach = (*reach).max(0.01) * r.w.min(r.h) * 0.5;
+                        canvas.fill_radial_gradient(r, *radius, clover_core::Point::new(cx, cy), reach, stops, c);
+                    }
+                }
+            }
             DrawCmd::Surface { .. } => {
                 // Filled in by the compositor, not by a tile.
             }
         }
     }
     canvas
+}
+
+/// Start and end of the gradient axis that spans `rect` at `angle` degrees.
+fn linear_axis(rect: Rect, angle: f32) -> (clover_core::Point, clover_core::Point) {
+    let radians = angle.to_radians();
+    let (dx, dy) = (radians.cos(), radians.sin());
+    let half = (rect.w * dx.abs() + rect.h * dy.abs()) * 0.5;
+    let cx = rect.x + rect.w * 0.5;
+    let cy = rect.y + rect.h * 0.5;
+    (
+        clover_core::Point::new(cx - dx * half, cy - dy * half),
+        clover_core::Point::new(cx + dx * half, cy + dy * half),
+    )
 }
 
 fn draw_glyph(

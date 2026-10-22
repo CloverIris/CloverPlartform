@@ -4,7 +4,8 @@
 //! memory layout CloverPic's `RgbaFrame` uses, so a surface can be handed to the
 //! native host without a conversion pass.
 
-use clover_core::{Color, Premul, Rect};
+use clover_core::{Color, Point, Premul, Rect};
+use clover_ui::style::GradientStop;
 
 /// A premultiplied BGRA8 raster target.
 #[derive(Clone)]
@@ -177,6 +178,89 @@ impl Canvas {
         }
     }
 
+    /// Linear gradient fill with the same antialiasing as a rounded rect.
+    ///
+    /// `from`/`to` are in physical pixels and define the gradient axis; colour is
+    /// interpolated in straight space so mid-tones stay perceptually sane.
+    pub fn fill_linear_gradient(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        from: Point,
+        to: Point,
+        stops: &[GradientStop],
+        clip: Rect,
+    ) {
+        self.fill_gradient(rect, radius, clip, |px, py| {
+            let axis = to - from;
+            let length_sq = axis.x * axis.x + axis.y * axis.y;
+            if length_sq <= f32::EPSILON {
+                return 0.0;
+            }
+            let dx = px - from.x;
+            let dy = py - from.y;
+            ((dx * axis.x + dy * axis.y) / length_sq).clamp(0.0, 1.0)
+        }, stops);
+    }
+
+    /// Radial gradient fill; `center` and `radius` are in physical pixels.
+    pub fn fill_radial_gradient(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        center: Point,
+        gradient_radius: f32,
+        stops: &[GradientStop],
+        clip: Rect,
+    ) {
+        let gradient_radius = gradient_radius.max(0.01);
+        self.fill_gradient(rect, radius, clip, |px, py| {
+            let dx = px - center.x;
+            let dy = py - center.y;
+            ((dx * dx + dy * dy).sqrt() / gradient_radius).clamp(0.0, 1.0)
+        }, stops);
+    }
+
+    fn fill_gradient(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        clip: Rect,
+        sample: impl Fn(f32, f32) -> f32,
+        stops: &[GradientStop],
+    ) {
+        let area = rect.intersect(clip);
+        if area.is_empty() || stops.is_empty() {
+            return;
+        }
+        let radius = radius.min(rect.w * 0.5).min(rect.h * 0.5);
+        let x0 = area.x.floor() as i32;
+        let y0 = area.y.floor() as i32;
+        let x1 = area.right().ceil() as i32;
+        let y1 = area.bottom().ceil() as i32;
+        let antialiased = radius > 0.5;
+
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+                let coverage = if antialiased {
+                    let distance = round_rect_sdf(px, py, rect, radius);
+                    (0.5 - distance).clamp(0.0, 1.0)
+                } else {
+                    let inside_x = px >= rect.x && px < rect.right();
+                    let inside_y = py >= rect.y && py < rect.bottom();
+                    if inside_x && inside_y { 1.0 } else { 0.0 }
+                };
+                if coverage <= 0.0 {
+                    continue;
+                }
+                let color = sample_stops(stops, sample(px, py));
+                self.blend(x, y, color.with_coverage((coverage * 255.0) as u8), clip);
+            }
+        }
+    }
+
     /// Blits a premultiplied source image with alpha, scaled into `dest`.
     ///
     /// Uses bilinear sampling when scaling so UI images stay smooth.
@@ -257,6 +341,24 @@ impl Canvas {
             self.pixels[i] = c.premultiply().0;
         }
     }
+}
+
+/// Interpolates a stop list at `t`, returning a premultiplied colour.
+fn sample_stops(stops: &[GradientStop], t: f32) -> Premul {
+    let t = t.clamp(0.0, 1.0);
+    let mut previous = stops[0];
+    if t <= previous.offset {
+        return previous.color.premultiply();
+    }
+    for stop in &stops[1..] {
+        if t <= stop.offset {
+            let span = (stop.offset - previous.offset).max(f32::EPSILON);
+            let local = ((t - previous.offset) / span).clamp(0.0, 1.0);
+            return previous.color.lerp(stop.color, local).premultiply();
+        }
+        previous = *stop;
+    }
+    previous.color.premultiply()
 }
 
 /// Overlap of `[a0, a1)` with `[b0, b1)`, in `0.0..=1.0`.

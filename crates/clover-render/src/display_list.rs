@@ -42,6 +42,14 @@ pub enum DrawCmd {
         color: Premul,
         clip: Rect,
     },
+    /// A gradient-filled box.
+    Gradient {
+        rect: Rect,
+        radius: f32,
+        geometry: clover_ui::style::GradientGeometry,
+        stops: Arc<Vec<clover_ui::style::GradientStop>>,
+        clip: Rect,
+    },
     /// A child surface the compositor samples; the tile renderer skips it.
     Surface {
         rect: Rect,
@@ -109,39 +117,66 @@ fn walk(
         }
     };
 
-    if let Some(clover_ui::style::Brush::Texture { handle, fit, opacity }) = &node.style.brush {
-        if let Some(image) = images.get(*handle) {
-            let natural = Size::new(image.width as f32, image.height as f32);
-            let fitted = fit_rect(rect, *fit, natural);
-            // A background texture never paints outside its own control: `Cover`
-            // crops, it does not overflow into the neighbours.
+    match &node.style.brush {
+        Some(clover_ui::style::Brush::Texture { handle, fit, opacity }) => {
+            if let Some(image) = images.get(*handle) {
+                let natural = Size::new(image.width as f32, image.height as f32);
+                let fitted = fit_rect(rect, *fit, natural);
+                // A background texture never paints outside its own control:
+                // `Cover` crops, it does not overflow into the neighbours.
+                let brush_clip = clip.intersect(rect);
+                if !brush_clip.is_empty() {
+                    out.push(DrawCmd::Image {
+                        rect: fitted,
+                        image: Arc::clone(image),
+                        clip: brush_clip,
+                        opacity: *opacity,
+                    });
+                }
+            }
+        }
+        Some(clover_ui::style::Brush::Gradient { geometry, stops }) if stops.len() >= 2 => {
             let brush_clip = clip.intersect(rect);
             if !brush_clip.is_empty() {
-                out.push(DrawCmd::Image {
-                    rect: fitted,
-                    image: Arc::clone(image),
+                out.push(DrawCmd::Gradient {
+                    rect,
+                    radius: node.style.radius * scale,
+                    geometry: *geometry,
+                    stops: Arc::new(stops.clone()),
                     clip: brush_clip,
-                    opacity: *opacity,
                 });
             }
         }
-    } else if node.style.background.a > 0 {
-        // Default interaction feedback: hovered surfaces lift, pressed ones sink.
-        // Skins that want their own visuals can set the background to transparent
-        // and draw their own state on top.
-        let background = if node.state.pressed {
-            node.style.background.lerp(Color::BLACK, 0.18)
-        } else if node.state.hovered {
-            node.style.background.lerp(Color::WHITE, 0.08)
-        } else {
-            node.style.background
-        };
-        out.push(DrawCmd::RoundedRect {
-            rect,
-            radius: node.style.radius * scale,
-            color: with_opacity(background),
-            clip,
-        });
+        Some(clover_ui::style::Brush::Solid(color)) => {
+            if color.a > 0 {
+                out.push(DrawCmd::RoundedRect {
+                    rect,
+                    radius: node.style.radius * scale,
+                    color: with_opacity(*color),
+                    clip,
+                });
+            }
+        }
+        _ => {
+            if node.style.background.a > 0 {
+                // Default interaction feedback: hovered surfaces lift, pressed
+                // ones sink. Skins that want their own visuals set the background
+                // to transparent and draw their own state on top.
+                let background = if node.state.pressed {
+                    node.style.background.lerp(Color::BLACK, 0.18)
+                } else if node.state.hovered {
+                    node.style.background.lerp(Color::WHITE, 0.08)
+                } else {
+                    node.style.background
+                };
+                out.push(DrawCmd::RoundedRect {
+                    rect,
+                    radius: node.style.radius * scale,
+                    color: with_opacity(background),
+                    clip,
+                });
+            }
+        }
     }
 
     if node.style.border_width > 0.0 && node.style.border_color.a > 0 {

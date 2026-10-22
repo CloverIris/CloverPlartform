@@ -23,7 +23,7 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 
 ![A .cui document rendered by the framework](docs/cui.png)
 
-> Status: **0.10 — input method support**. The pipeline works end to end (tree →
+> Status: **0.11 — gradients, templates, animation**. The pipeline works end to end (tree →
 > layout → display list → tile-parallel raster → frame), both authoring
 > front-ends produce the same tree, layout supports flex-style `Fill`, text
 > wraps, and keyboard focus is routed. Styles, templates, bindings and animation
@@ -67,9 +67,14 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
   and the result records *why* it fell back.
 * **Grid layout.** `Grid Columns="3"` / `Node::grid(3)` places children in uniform
   cells, filling a definite height and sizing to content otherwise.
-* **Textured backgrounds.** `BackgroundImage="{StaticResource key}"` paints a
-  fitted, cropped texture through `StyleBrush`; `.cui` declares the images in
-  `<Resources>`.
+* **Brushes.** Solid colour, fitted/cropped texture (`BackgroundImage`), or a
+  linear/radial gradient (`BackgroundGradient`, `GradientStops`).
+* **Control templates.** `<Template x:Key="chip">` in a stylesheet replaces a
+  control's visuals while keeping its properties; `{Binding Content}` and
+  `{Binding Tag}` bind the control into the template.
+* **Animation.** Opacity and background colour ease towards a target over a
+  duration; `Surface::advance` returns whether more frames are needed, so hosts
+  stop requesting frames when everything settles.
 * **Stylesheets.** `<Styles>` with type, class, name and universal selectors,
   ordered by specificity. Styles provide defaults; attributes win; font size and
   text colour cascade.

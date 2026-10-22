@@ -641,6 +641,65 @@ pub unsafe extern "C" fn clover_surface_set_text(
     }
 }
 
+/// Animates a node's opacity towards `target` over `duration_ms`.
+///
+/// # Safety
+/// `name_utf8` must be a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_animate_opacity(
+    surface: *mut CloverSurface,
+    name_utf8: *const c_char,
+    target: f32,
+    duration_ms: u64,
+    now_ms: u64,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if name_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let Ok(name) = CStr::from_ptr(name_utf8).to_str() else { return CloverResult::ParseError };
+    if surface.surface.animate_opacity(name, target, duration_ms, now_ms) {
+        CloverResult::Ok
+    } else {
+        CloverResult::UnknownHandle
+    }
+}
+
+/// Animates a node's background colour towards `rgba` (`0xRRGGBBAA`).
+///
+/// # Safety
+/// `name_utf8` must be a NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_animate_background(
+    surface: *mut CloverSurface,
+    name_utf8: *const c_char,
+    rgba: u32,
+    duration_ms: u64,
+    now_ms: u64,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if name_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let Ok(name) = CStr::from_ptr(name_utf8).to_str() else { return CloverResult::ParseError };
+    let color = clover_core::Color::from_rgba_u32(rgba);
+    if surface.surface.animate_background(name, color, duration_ms, now_ms) {
+        CloverResult::Ok
+    } else {
+        CloverResult::UnknownHandle
+    }
+}
+
+/// Advances all running animations. Returns `true` while more frames are needed.
+///
+/// # Safety
+/// `surface` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_advance(surface: *mut CloverSurface, now_ms: u64) -> bool {
+    let Some(surface) = surface.as_mut() else { return false };
+    surface.surface.advance(now_ms)
+}
+
 /// Registers an image from a PNG file and returns its handle, or 0 on failure.
 ///
 /// # Safety
