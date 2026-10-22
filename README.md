@@ -19,7 +19,11 @@ core-drawn scene. The buttons raise commands; core still owns the state machine.
 
 ![CloverPic Program Manager rendered by CloverPlatform](docs/program-manager.png)
 
-> Status: **0.6 — hosted by CloverPic**. The pipeline works end to end (tree →
+A whole UI from one `.cui` file — data, styles, bindings and a scrollable list:
+
+![A .cui document rendered by the framework](docs/cui.png)
+
+> Status: **0.7 — UI documents**. The pipeline works end to end (tree →
 > layout → display list → tile-parallel raster → frame), both authoring
 > front-ends produce the same tree, layout supports flex-style `Fill`, text
 > wraps, and keyboard focus is routed. Styles, templates, bindings and animation
@@ -42,9 +46,22 @@ core-drawn scene. The buttons raise commands; core still owns the state machine.
   rectangles and borders.
 * **Keyboard focus.** Tab / Shift+Tab traversal over focusable nodes, and key
   events routed through capture → target → bubble along the focused node.
-* **Stylesheets.** `<Styles>` with type, name and universal selectors, ordered by
-  specificity. Styles provide defaults; attributes on the element win; font size
-  and text colour cascade into children.
+* **UI documents.** One `.cui` file holds data, styles and the page:
+
+  ```xml
+  <Ui>
+    <Data><Value Key="title" Text="Settings"/></Data>
+    <Styles><Style TargetType="Button" Background="#2E6FD0" CornerRadius="6"/></Styles>
+    <StackPanel><TextBlock Text="{Binding title}"/></StackPanel>
+  </Ui>
+  ```
+
+* **Stylesheets.** `<Styles>` with type, class, name and universal selectors,
+  ordered by specificity. Styles provide defaults; attributes win; font size and
+  text colour cascade.
+* **Data binding.** `{Binding key}` in any attribute, resolved at build time from
+  a flat key → value map. Typed values (colour, number, bool) bypass the string
+  round-trip.
 * **Scrolling.** Vertical scroll containers (`ScrollViewer`, `Node::scrollable`)
   clamp their offset against the laid-out content and paint a scrollbar. Wheel
   events route to the nearest scrollable ancestor.

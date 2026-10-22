@@ -117,6 +117,25 @@ clover_surface *clover_surface_create_from_xaml_with_styles(float width, float h
 clover_result clover_surface_set_root_xaml(clover_surface *surface, const char *xaml_utf8,
                                            const char *styles_utf8);
 
+/*
+ * `.cui` documents
+ * ----------------
+ * A `.cui` file embeds data, styles and one page root, so a whole UI lives in one
+ * file:
+ *
+ *   <Ui>
+ *     <Data><Value Key="title" Text="Hello"/></Data>
+ *     <Styles><Style TargetType="Button" Background="#2E6FD0"/></Styles>
+ *     <StackPanel><TextBlock Text="{Binding title}"/></StackPanel>
+ *   </Ui>
+ *
+ * Bindings resolve at build time; call set_root_cui again to refresh them.
+ */
+clover_surface *clover_surface_create_from_cui(float width, float height, float scale,
+                                               const char *path_utf8);
+
+clover_result clover_surface_set_root_cui(clover_surface *surface, const char *path_utf8);
+
 /* Creates a surface with an empty root panel. */
 clover_surface *clover_surface_create_empty(float width, float height, float scale);
 

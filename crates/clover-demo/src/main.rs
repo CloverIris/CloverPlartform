@@ -97,6 +97,18 @@ fn main() {
     println!("  output           : {}", out.display());
     println!("  scrolled output  : {} (4 wheel notches)", scrolled.display());
 
+    // A whole UI from one .cui file: data + styles + page, bindings resolved.
+    if let Ok(document) = xaml::UiDocument::from_path("examples/workspace.cui") {
+        let page = document.build(&xaml::NoImages).expect("cui build");
+        let mut cui_surface = Surface::new(page, 760.0, 480.0, 2.0).expect("system font required");
+        cui_surface.invalidate_all();
+        let _ = cui_surface.frame();
+        let path = std::path::Path::new("demo-cui.png");
+        write_png(path, &cui_surface).expect("write cui png");
+        println!("  cui document     : {} ({} values, {} rules)", path.display(),
+                 document.data.len(), document.sheet.len());
+    }
+
     // The same page, one stylesheet each. No colour appears in the markup.
     for (name, sheet) in [("dark", DARK_THEME), ("light", LIGHT_THEME)] {
         let sheet = xaml::parse_stylesheet(sheet).expect("theme parses");

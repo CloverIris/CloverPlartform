@@ -88,7 +88,23 @@ layout and rasterisation disagree and text overflows its box. That is why
 `LayoutMetrics::measure_text` takes the optional max width instead of leaving
 wrapping to the renderer.
 
-## 6. Styles
+## 6. UI documents
+
+A `.cui` file is `<Ui>` wrapping three optional sections: `<Data>`, `<Styles>`,
+and exactly one page root. Parsing produces a `UiDocument` that keeps the data
+and the sheet; `build` produces a `Node` tree with bindings resolved.
+
+Keeping the parsed document around matters: refreshing a page after data changes
+is `document.build_with(&overrides)` rather than re-reading and re-parsing the
+file, and hosts can layer runtime values (`overrides`) over the document's
+defaults without editing it.
+
+Binding is deliberately not reactive. There is no observer graph and no
+invalidation: the host rebuilds the page when its data changes. For a desktop app
+that repaints on input anyway, a pull model is both simpler and cheaper than
+pushing change notifications through a tree.
+
+## 7. Styles
 
 A stylesheet is an ordered list of `(selector, partial properties)` rules. Only
 three selector forms exist — universal, element type, and `x:Name` — which is
@@ -103,7 +119,7 @@ needs to differ.
 Font size and text colour cascade explicitly through a build-time context rather
 than by re-walking the tree. Inheritance flows down; anything else stays local.
 
-## 7. Scrolling
+## 8. Scrolling
 
 A scroll container is a **viewport**; that word is doing real work. During
 measure it reports `min(content, available)` instead of its content height.
@@ -119,7 +135,7 @@ children out in a box shifted up by the offset. Wheel events route to the neares
 scrollable ancestor of the hit node; the scrollbar is emitted after the children
 so it paints on top.
 
-## 8. Actions
+## 9. Actions
 
 A node can carry a string command (`x:Name`-style authoring: `Command="save"`).
 Activation is the framework's job; meaning is the host's.
@@ -136,7 +152,7 @@ them after pushing input, which keeps re-entrancy out of the framework: an actio
 handler can mutate the tree (`clover_surface_set_visible`) without the input
 stack pointing at stale nodes.
 
-## 9. Focus
+## 10. Focus
 
 Focus lives on `UiTree`, not on the platform layer: `set_focus` and `focus_next`
 update `NodeState::focused` and mark the affected bounds dirty. Traversal order is
@@ -146,7 +162,7 @@ Pointer-down focuses the innermost focusable ancestor of the hit node, and
 Tab/Shift+Tab are consumed by `Surface::dispatch` before routing. Everything else
 routes from the focused node.
 
-## 10. Direct-memory surfaces
+## 11. Direct-memory surfaces
 
 A `DirectSurface` is a pixel buffer that another thread owns and writes.
 
@@ -170,7 +186,7 @@ one. That is the swap-chain consistency guarantee.
 The C ABI exposes this as `clover_direct_begin_write` / `clover_direct_commit`,
 which is exactly the "give me the memory address" escape hatch.
 
-## 11. Pixel format
+## 12. Pixel format
 
 Internally, and on the frame handed to hosts: **premultiplied BGRA8 in `u32`**
 (`0xAARRGGBB`, memory order B,G,R,A on little-endian).
@@ -182,7 +198,7 @@ only at export boundaries (PNG).
 This also matches CloverPic's `RgbaFrame`, so a CloverPlatform surface can be
 handed to the existing adapters without a conversion pass.
 
-## 12. C ABI boundary
+## 13. C ABI boundary
 
 The host keeps: window creation, the event loop, platform input, and presenting
 pixels. CloverPlatform keeps: the tree, layout, rasterisation and the frame

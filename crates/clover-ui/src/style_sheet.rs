@@ -26,6 +26,8 @@ pub enum Selector {
     Type(String),
     /// The element carrying this `x:Name`.
     Name(String),
+    /// Elements listing this class in `Class="a b"`.
+    Class(String),
 }
 
 impl Selector {
@@ -34,15 +36,17 @@ impl Selector {
         match self {
             Selector::All => 0,
             Selector::Type(_) => 1,
-            Selector::Name(_) => 2,
+            Selector::Class(_) => 2,
+            Selector::Name(_) => 3,
         }
     }
 
-    pub fn matches(&self, type_name: &str, name: Option<&str>) -> bool {
+    pub fn matches(&self, type_name: &str, name: Option<&str>, classes: &[String]) -> bool {
         match self {
             Selector::All => true,
             Selector::Type(expected) => expected.eq_ignore_ascii_case(type_name),
             Selector::Name(expected) => name.map(|n| n == expected).unwrap_or(false),
+            Selector::Class(expected) => classes.iter().any(|c| c == expected),
         }
     }
 }
@@ -94,12 +98,12 @@ impl StyleSheet {
     }
 
     /// Matching rules, lowest specificity first, so later applications win.
-    pub fn resolve(&self, type_name: &str, name: Option<&str>) -> Vec<&StyleProps> {
+    pub fn resolve(&self, type_name: &str, name: Option<&str>, classes: &[String]) -> Vec<&StyleProps> {
         let mut matched: Vec<(u8, usize, &StyleProps)> = self
             .rules
             .iter()
             .enumerate()
-            .filter(|(_, rule)| rule.selector.matches(type_name, name))
+            .filter(|(_, rule)| rule.selector.matches(type_name, name, classes))
             .map(|(index, rule)| (rule.selector.specificity(), index, &rule.props))
             .collect();
         matched.sort_by_key(|(specificity, index, _)| (*specificity, *index));
@@ -117,16 +121,16 @@ mod tests {
 
     #[test]
     fn type_selector_matches_case_insensitively() {
-        assert!(Selector::Type("Button".into()).matches("button", None));
-        assert!(!Selector::Type("Button".into()).matches("TextBlock", None));
+        assert!(Selector::Type("Button".into()).matches("button", None, &[]));
+        assert!(!Selector::Type("Button".into()).matches("TextBlock", None, &[]));
     }
 
     #[test]
     fn name_selector_needs_the_name() {
         let selector = Selector::Name("title".into());
-        assert!(selector.matches("TextBlock", Some("title")));
-        assert!(!selector.matches("TextBlock", Some("other")));
-        assert!(!selector.matches("TextBlock", None));
+        assert!(selector.matches("TextBlock", Some("title"), &[]));
+        assert!(!selector.matches("TextBlock", Some("other"), &[]));
+        assert!(!selector.matches("TextBlock", None, &[]));
     }
 
     #[test]
@@ -135,7 +139,7 @@ mod tests {
         sheet.push(rule(Selector::Name("btn".into()), StyleProps { font_size: Some(20.0), ..Default::default() }));
         sheet.push(rule(Selector::Type("Button".into()), StyleProps { font_size: Some(12.0), ..Default::default() }));
 
-        let resolved = sheet.resolve("Button", Some("btn"));
+        let resolved = sheet.resolve("Button", Some("btn"), &[]);
         assert_eq!(resolved.len(), 2);
         // Type first (specificity 1), name last (specificity 2).
         assert_eq!(resolved[0].font_size, Some(12.0));
@@ -147,22 +151,41 @@ mod tests {
         let mut sheet = StyleSheet::new();
         sheet.push(rule(Selector::Type("Panel".into()), StyleProps { radius: Some(2.0), ..Default::default() }));
         sheet.push(rule(Selector::Type("Panel".into()), StyleProps { radius: Some(8.0), ..Default::default() }));
-        let resolved = sheet.resolve("Panel", None);
+        let resolved = sheet.resolve("Panel", None, &[]);
         assert_eq!(resolved[0].radius, Some(2.0));
         assert_eq!(resolved[1].radius, Some(8.0), "later rule wins");
+    }
+
+    #[test]
+    fn class_selector_matches_any_listed_class() {
+        let selector = Selector::Class("accent".into());
+        assert!(selector.matches("Button", None, &["accent".to_string()]));
+        assert!(selector.matches("Button", None, &["plain".to_string(), "accent".to_string()]));
+        assert!(!selector.matches("Button", None, &["plain".to_string()]));
+    }
+
+    #[test]
+    fn name_beats_class_beats_type() {
+        let mut sheet = StyleSheet::new();
+        sheet.push(rule(Selector::Type("Button".into()), StyleProps { font_size: Some(1.0), ..Default::default() }));
+        sheet.push(rule(Selector::Class("big".into()), StyleProps { font_size: Some(2.0), ..Default::default() }));
+        sheet.push(rule(Selector::Name("ok".into()), StyleProps { font_size: Some(3.0), ..Default::default() }));
+        let resolved = sheet.resolve("Button", Some("ok"), &["big".to_string()]);
+        let sizes: Vec<Option<f32>> = resolved.iter().map(|p| p.font_size).collect();
+        assert_eq!(sizes, vec![Some(1.0), Some(2.0), Some(3.0)]);
     }
 
     #[test]
     fn all_matches_everything() {
         let mut sheet = StyleSheet::new();
         sheet.push(rule(Selector::All, StyleProps { foreground: Some(Color::BLACK), ..Default::default() }));
-        assert_eq!(sheet.resolve("Anything", None).len(), 1);
+        assert_eq!(sheet.resolve("Anything", None, &[]).len(), 1);
     }
 
     #[test]
     fn unmatched_yields_nothing() {
         let mut sheet = StyleSheet::new();
         sheet.push(rule(Selector::Type("Button".into()), StyleProps::default()));
-        assert!(sheet.resolve("Panel", None).is_empty());
+        assert!(sheet.resolve("Panel", None, &[]).is_empty());
     }
 }

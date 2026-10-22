@@ -1,0 +1,56 @@
+<Ui>
+  <Data>
+    <Value Key="app" Text="CloverPic"/>
+    <Value Key="doc" Text="untitled.cloverpic"/>
+    <Value Key="accent" Color="#2F6FD0"/>
+    <Value Key="zoom" Number="141"/>
+    <Value Key="tool" Text="Brush"/>
+  </Data>
+
+  <Styles>
+    <Style TargetType="TextBlock" FontSize="12" Foreground="#CBD2D9"/>
+    <Style TargetType="Button" Background="#2A2E33" Foreground="#E8ECF0"
+           CornerRadius="5" Padding="12,6" BorderThickness="1" BorderBrush="#3B4048"/>
+    <Style Class="accent" Background="#2F6FD0" Foreground="#FFFFFF" BorderBrush="#4C8DE8"/>
+    <Style Class="dim" Foreground="#8B939D"/>
+    <Style x:Name="root" Background="#1A1C20"/>
+    <Style x:Name="toolbar" Background="#23262A" Padding="10"/>
+    <Style x:Name="status" Background="#191B1E" Padding="12,6"/>
+    <Style x:Name="panel" Background="#1D2024" Padding="10" CornerRadius="8"/>
+    <Style x:Name="row" Background="#262A2F" CornerRadius="4" Padding="8,0"/>
+  </Styles>
+
+  <StackPanel x:Name="root" Width="Fill" Height="Fill">
+    <StackPanel x:Name="toolbar" Orientation="Horizontal" Spacing="8">
+      <Button Content="Select" Class="accent"/>
+      <Button Content="Brush"/>
+      <Button Content="Eraser"/>
+      <Button Content="Fill"/>
+    </StackPanel>
+
+    <StackPanel Orientation="Horizontal" Spacing="12" Padding="12" Width="Fill" Height="Fill">
+      <StackPanel x:Name="panel" Width="190" Spacing="6" Height="Fill">
+        <TextBlock Text="LAYERS" Class="dim"/>
+        <ScrollViewer Height="Fill" Width="Fill">
+          <Panel Height="30" x:Name="row"><TextBlock Text="Layer 1" VerticalAlignment="Center"/></Panel>
+          <Panel Height="30" x:Name="row"><TextBlock Text="Sketch"  VerticalAlignment="Center"/></Panel>
+          <Panel Height="30" x:Name="row"><TextBlock Text="Colour"  VerticalAlignment="Center"/></Panel>
+          <Panel Height="30" x:Name="row"><TextBlock Text="Shadow"  VerticalAlignment="Center"/></Panel>
+          <Panel Height="30" x:Name="row"><TextBlock Text="Line art" VerticalAlignment="Center"/></Panel>
+          <Panel Height="30" x:Name="row"><TextBlock Text="Highlights" VerticalAlignment="Center"/></Panel>
+          <Panel Height="30" x:Name="row"><TextBlock Text="Notes" VerticalAlignment="Center"/></Panel>
+        </ScrollViewer>
+      </StackPanel>
+
+      <Panel x:Name="panel" Width="Fill" Height="Fill" Background="#15171A">
+        <TextBlock Text="{Binding doc}" FontSize="16" Foreground="#E8ECF0"/>
+      </Panel>
+    </StackPanel>
+
+    <StackPanel x:Name="status" Orientation="Horizontal" Spacing="18">
+      <TextBlock Text="{Binding tool}"/>
+      <TextBlock Text="{Binding doc}"/>
+      <TextBlock Text="{Binding zoom}"/>
+    </StackPanel>
+  </StackPanel>
+</Ui>

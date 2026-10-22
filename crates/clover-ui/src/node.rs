@@ -104,6 +104,8 @@ pub struct Node {
     pub focusable: bool,
     /// Vertical scrolling state; only used when `scroll.enabled`.
     pub scroll: ScrollState,
+    /// Style classes matched by `Selector::Class`.
+    pub classes: Vec<String>,
     /// Command identifier reported to the host when this node is activated.
     ///
     /// The framework decides *when* activation happens; the host decides what the
@@ -126,6 +128,7 @@ impl Default for Node {
             visible: true,
             focusable: false,
             scroll: ScrollState::default(),
+            classes: Vec::new(),
             action: None,
         }
     }
@@ -280,6 +283,12 @@ impl Node {
     /// Word-wraps text to the node's content width.
     pub fn wrap(mut self, wrap: bool) -> Self {
         self.style.wrap = wrap;
+        self
+    }
+
+    /// Adds style classes.
+    pub fn classes(mut self, classes: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.classes.extend(classes.into_iter().map(Into::into));
         self
     }
 

@@ -23,6 +23,7 @@
 //! direction, and a retained shell can host declarative regions through
 //! [`node::UiTree::mount`].
 
+pub mod binding;
 pub mod event;
 pub mod layout;
 pub mod node;
@@ -35,6 +36,8 @@ pub use event::{
     RouteEntry, UiEvent, WheelEvent,
 };
 pub use layout::{EmptyMetrics, LayoutMetrics};
-pub use node::{ImageHandle, Node, NodeId, NodeMode, SurfaceHandle, UiTree, View};
+pub use xaml::UiDocument;
+pub use node::{ImageHandle, Node, NodeId, NodeMode, ScrollState, SurfaceHandle, UiTree, View};
 pub use style::{Fit, Length, NodeState, Style};
+pub use binding::{binding_key, DataContext, Value};
 pub use style_sheet::{Selector, StyleProps, StyleRule, StyleSheet};

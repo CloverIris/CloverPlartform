@@ -89,8 +89,27 @@ pub fn parse_with_styles(
     images: &dyn ImageResolver,
     sheet: &crate::style_sheet::StyleSheet,
 ) -> Result<Node, XamlError> {
+    parse_with_data(source, images, sheet, &crate::binding::DataContext::new())
+}
+
+/// Parses with both a stylesheet and a data context for `{Binding key}`.
+pub fn parse_with_data(
+    source: &str,
+    images: &dyn ImageResolver,
+    sheet: &crate::style_sheet::StyleSheet,
+    data: &crate::binding::DataContext,
+) -> Result<Node, XamlError> {
     let document = parse_xml(source)?;
-    build(&document, images, sheet, InheritedStyle::default())
+    let context = BuildContext { images, sheet, data };
+    build(&document, &context, InheritedStyle::default())
+}
+
+/// Everything a build pass needs that is not on the element itself.
+#[derive(Clone, Copy)]
+struct BuildContext<'a> {
+    images: &'a dyn ImageResolver,
+    sheet: &'a crate::style_sheet::StyleSheet,
+    data: &'a crate::binding::DataContext,
 }
 
 /// Inherited properties: text styling cascades to children, everything else does
@@ -110,20 +129,26 @@ impl Default for InheritedStyle {
 
 /// Parses a `<Styles>` document into a [`crate::style_sheet::StyleSheet`].
 pub fn parse_stylesheet(source: &str) -> Result<crate::style_sheet::StyleSheet, XamlError> {
-    use crate::style_sheet::{Selector, StyleProps, StyleRule, StyleSheet};
-
     let document = parse_xml(source)?;
     if !document.name.eq_ignore_ascii_case("Styles") {
         return err(document.offset, "a stylesheet document must start with <Styles>");
     }
+    parse_styles_node(&document)
+}
+
+/// Parses the `<Style>` children of a `<Styles>` element.
+fn parse_styles_node(node: &XmlNode) -> Result<crate::style_sheet::StyleSheet, XamlError> {
+    use crate::style_sheet::{Selector, StyleProps, StyleRule, StyleSheet};
 
     let mut sheet = StyleSheet::new();
-    for child in &document.children {
+    for child in &node.children {
         if !child.name.eq_ignore_ascii_case("Style") {
             return err(child.offset, format!("unsupported element <{}> in <Styles>", child.name));
         }
         let selector = if let Some(name) = child.attr("x:Name").or_else(|| child.attr("Name")) {
             Selector::Name(name.to_string())
+        } else if let Some(class) = child.attr("Class").or_else(|| child.attr("TargetClass")) {
+            Selector::Class(class.trim().to_string())
         } else if let Some(target) = child.attr("TargetType") {
             Selector::Type(target.to_string())
         } else {
@@ -174,6 +199,117 @@ pub fn parse_stylesheet(source: &str) -> Result<crate::style_sheet::StyleSheet, 
         sheet.push(StyleRule { selector, props });
     }
     Ok(sheet)
+}
+
+/// A `.cui` UI document: data, styles and one page root.
+///
+/// ```xml
+/// <Ui>
+///   <Data>
+///     <Value Key="title" Text="Settings"/>
+///     <Value Key="accent" Color="#2F6FD0"/>
+///   </Data>
+///   <Styles>
+///     <Style TargetType="Button" Background="#2E6FD0" CornerRadius="6"/>
+///   </Styles>
+///   <StackPanel><TextBlock Text="{Binding title}"/></StackPanel>
+/// </Ui>
+/// ```
+///
+/// The document is parsed once and rebuilt on demand, which is when bindings are
+/// resolved. Nothing observes the data: the host rebuilds when it changes.
+#[derive(Clone, Debug)]
+pub struct UiDocument {
+    pub data: crate::binding::DataContext,
+    pub sheet: crate::style_sheet::StyleSheet,
+    root: XmlNode,
+    source: String,
+}
+
+impl UiDocument {
+    /// Parses a `.cui` document.
+    pub fn parse(source: &str) -> Result<Self, XamlError> {
+        let document = parse_xml(source)?;
+        if !document.name.eq_ignore_ascii_case("Ui") {
+            return err(document.offset, "a .cui document must start with <Ui>");
+        }
+
+        let mut data = crate::binding::DataContext::new();
+        let mut sheet = crate::style_sheet::StyleSheet::new();
+        let mut root: Option<XmlNode> = None;
+
+        for child in &document.children {
+            let name = child.name.to_ascii_lowercase();
+            if name == "data" {
+                for entry in &child.children {
+                    if !entry.name.eq_ignore_ascii_case("Value") {
+                        return err(entry.offset, "expected <Value> inside <Data>");
+                    }
+                    let Some(key) = entry.attr("Key") else {
+                        return err(entry.offset, "<Value> needs a Key");
+                    };
+                    let value = if let Some(text) = entry.attr("Text") {
+                        crate::binding::Value::Text(text.to_string())
+                    } else if let Some(number) = entry.attr("Number") {
+                        let parsed = number.trim().parse::<f64>().map_err(|_| XamlError {
+                            message: format!("bad Number '{number}'"),
+                            offset: entry.offset,
+                        })?;
+                        crate::binding::Value::Number(parsed)
+                    } else if let Some(flag) = entry.attr("Bool") {
+                        crate::binding::Value::Bool(
+                            flag.trim().eq_ignore_ascii_case("true") || flag.trim() == "1",
+                        )
+                    } else if let Some(color) = entry.attr("Color") {
+                        crate::binding::Value::Color(parse_color(color, entry.offset)?)
+                    } else {
+                        return err(entry.offset, "<Value> needs Text, Number, Bool or Color");
+                    };
+                    data.insert(key, value);
+                }
+            } else if name == "styles" {
+                sheet = parse_styles_node(child)?;
+            } else {
+                if root.is_some() {
+                    return err(child.offset, "a .cui document has exactly one page root");
+                }
+                root = Some(child.clone());
+            }
+        }
+
+        let Some(root) = root else {
+            return err(document.offset, "a .cui document needs a page root");
+        };
+        Ok(Self { data, sheet, root, source: source.to_string() })
+    }
+
+    /// Reads and parses a `.cui` file.
+    pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self, String> {
+        let source = std::fs::read_to_string(path.as_ref())
+            .map_err(|error| format!("read .cui failed: {error}"))?;
+        Self::parse(&source).map_err(|error| error.to_string())
+    }
+
+    /// The original source, so hosts can keep it around.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Builds the page using the document's own data.
+    pub fn build(&self, images: &dyn ImageResolver) -> Result<Node, XamlError> {
+        self.build_with(images, &crate::binding::DataContext::new())
+    }
+
+    /// Builds the page, with `overrides` layered over the document's data.
+    pub fn build_with(
+        &self,
+        images: &dyn ImageResolver,
+        overrides: &crate::binding::DataContext,
+    ) -> Result<Node, XamlError> {
+        let data = self.data.merged(overrides);
+        let context = BuildContext { images, sheet: &self.sheet, data: &data };
+        build(&self.root, &context, InheritedStyle::default())
+    }
 }
 
 // ---- XML ------------------------------------------------------------------
@@ -387,12 +523,9 @@ fn decode_entities(text: &str) -> String {
     out
 }
 
-// ---- element mapping ------------------------------------------------------
-
 fn build(
     xml: &XmlNode,
-    images: &dyn ImageResolver,
-    sheet: &crate::style_sheet::StyleSheet,
+    context: &BuildContext<'_>,
     inherited: InheritedStyle,
 ) -> Result<Node, XamlError> {
     // Containers that synthesise their own children (Grid) must not also have the
@@ -408,26 +541,23 @@ fn build(
         }
         "grid" => {
             consumes_children = true;
-            build_grid(xml, images, sheet, inherited)?
+            build_grid(xml, context, inherited)?
         }
         "canvas" => node::stack(Orientation::Vertical).align(Align::Start).justify(Align::Start),
         "border" => node::panel(),
         "scrollviewer" => node::column().scrollable(),
         "panel" | "stack" => node::panel(),
         "textblock" | "text" | "label" => {
-            let content = xml
-                .attr("Text")
-                .map(str::to_string)
-                .unwrap_or_else(|| xml.text.clone());
-            node::text(content)
+            let raw = xml.attr("Text").map(str::to_string).unwrap_or_else(|| xml.text.clone());
+            node::text(context.data.resolve_text(&raw))
         }
         "button" => {
-            let label = xml.attr("Content").map(str::to_string).unwrap_or_else(|| xml.text.clone());
-            node::button(label)
+            let raw = xml.attr("Content").map(str::to_string).unwrap_or_else(|| xml.text.clone());
+            node::button(context.data.resolve_text(&raw))
         }
         "image" => {
             let source = xml.attr("Source").unwrap_or_default();
-            match images.resolve(source) {
+            match context.images.resolve(&context.data.resolve_text(source)) {
                 Some(handle) => {
                     let fit = match xml.attr("Stretch").map(|v| v.trim().to_ascii_lowercase()).as_deref() {
                         Some("uniform") => Fit::Contain,
@@ -454,8 +584,13 @@ fn build(
     // Styles are defaults; element attributes override them; text properties
     // cascade into children.
     let mut ctx = inherited;
+    let classes: Vec<String> = xml
+        .attr("Class")
+        .map(|raw| raw.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default();
+    node.classes = classes.clone();
     let element_name = xml.attr("x:Name").or_else(|| xml.attr("Name"));
-    for props in sheet.resolve(&xml.name, element_name) {
+    for props in context.sheet.resolve(&xml.name, element_name, &classes) {
         apply_style_props(&mut node, props);
         if let Some(v) = props.font_size {
             ctx.font_size = v;
@@ -465,7 +600,7 @@ fn build(
         }
     }
 
-    apply_common_attributes(&mut node, xml)?;
+    apply_common_attributes(&mut node, xml, context)?;
     if let Some(v) = xml.attr_f32("FontSize") {
         ctx.font_size = v;
     }
@@ -477,7 +612,7 @@ fn build(
 
     if !consumes_children {
         for child in &xml.children {
-            let child_node = build(child, images, sheet, ctx)?;
+            let child_node = build(child, context, ctx)?;
             node.children.push(child_node);
         }
     }
@@ -523,8 +658,7 @@ fn apply_style_props(node: &mut Node, props: &crate::style_sheet::StyleProps) {
 
 fn build_grid(
     xml: &XmlNode,
-    images: &dyn ImageResolver,
-    sheet: &crate::style_sheet::StyleSheet,
+    context: &BuildContext<'_>,
     inherited: InheritedStyle,
 ) -> Result<Node, CloverGridError> {
     // A uniform grid expressed with the existing stack layout: one row per
@@ -536,7 +670,7 @@ fn build_grid(
 
     let mut row = node::row().align(Align::Stretch).gap(gap);
     for (index, child) in xml.children.iter().enumerate() {
-        let mut cell = build(child, images, sheet, inherited)?;
+        let mut cell = build(child, context, inherited)?;
         if cell.style.width == Length::Auto {
             cell.style.width = Length::Percent(1.0 / columns as f32);
         }
@@ -558,15 +692,19 @@ fn build_grid(
 // keeping the alias makes the intent obvious at the call site.
 type CloverGridError = XamlError;
 
-fn apply_common_attributes(node: &mut Node, xml: &XmlNode) -> Result<(), XamlError> {
+fn apply_common_attributes(
+    node: &mut Node,
+    xml: &XmlNode,
+    context: &BuildContext<'_>,
+) -> Result<(), XamlError> {
     if let Some(name) = xml.attr("x:Name").or_else(|| xml.attr("Name")) {
         node.name = Some(name.to_string());
     }
     if let Some(key) = xml.attr("Key") {
-        node.key = Some(key.to_string());
+        node.key = Some(context.data.resolve_text(key));
     }
     if let Some(command) = xml.attr("Command") {
-        node.action = Some(command.to_string());
+        node.action = Some(context.data.resolve_text(command));
     }
 
     for (attr, target) in [
@@ -574,7 +712,8 @@ fn apply_common_attributes(node: &mut Node, xml: &XmlNode) -> Result<(), XamlErr
         ("Height", AttrTarget::Height),
     ] {
         if let Some(value) = xml.attr(attr) {
-            let length = Length::parse(value)
+            let resolved = context.data.resolve_text(value);
+            let length = Length::parse(&resolved)
                 .ok_or_else(|| XamlError { message: format!("bad {attr} '{value}'"), offset: xml.offset })?;
             match target {
                 AttrTarget::Width => node.style.width = length,
@@ -605,13 +744,19 @@ fn apply_common_attributes(node: &mut Node, xml: &XmlNode) -> Result<(), XamlErr
         node.style.gap = v;
     }
     if let Some(v) = xml.attr("Background") {
-        node.style.background = parse_color(v, xml.offset)?;
+        node.style.background = context
+            .data
+            .resolve_color(v)
+            .ok_or_else(|| XamlError { message: format!("bad Background '{v}'"), offset: xml.offset })?;
     }
     if let Some(v) = xml.attr("Foreground") {
-        node.style.text_color = parse_color(v, xml.offset)?;
+        node.style.text_color = context
+            .data
+            .resolve_color(v)
+            .ok_or_else(|| XamlError { message: format!("bad Foreground '{v}'"), offset: xml.offset })?;
     }
-    if let Some(v) = xml.attr_f32("FontSize") {
-        node.style.font_size = v;
+    if let Some(v) = xml.attr("FontSize").and_then(|v| context.data.resolve_number(v)) {
+        node.style.font_size = v as f32;
     }
     if let Some(v) = xml.attr_f32("CornerRadius") {
         node.style.radius = v;
@@ -620,7 +765,10 @@ fn apply_common_attributes(node: &mut Node, xml: &XmlNode) -> Result<(), XamlErr
         node.style.border_width = v;
     }
     if let Some(v) = xml.attr("BorderBrush") {
-        node.style.border_color = parse_color(v, xml.offset)?;
+        node.style.border_color = context
+            .data
+            .resolve_color(v)
+            .ok_or_else(|| XamlError { message: format!("bad BorderBrush '{v}'"), offset: xml.offset })?;
     }
     if let Some(v) = xml.attr_f32("Opacity") {
         node.style.opacity = v.clamp(0.0, 1.0);
@@ -634,6 +782,9 @@ fn apply_common_attributes(node: &mut Node, xml: &XmlNode) -> Result<(), XamlErr
     }
     if let Some(v) = xml.attr_bool("Focusable") {
         node.focusable = v;
+    }
+    if let Some(v) = xml.attr("Visible").and_then(|v| context.data.resolve_bool(v)) {
+        node.visible = v;
     }
     if let Some(v) = xml.attr_bool("IsEnabled") {
         node.state.disabled = !v;
@@ -898,6 +1049,83 @@ mod tests {
         let a = parse(r#"<TextBlock Text="x" FontSize="13"/>"#, &NoImages).unwrap();
         let b = parse_with_styles(r#"<TextBlock Text="x" FontSize="13"/>"#, &NoImages, &sheet).unwrap();
         assert_eq!(a.style.font_size, b.style.font_size);
+    }
+
+    const CUI: &str = r##"
+<Ui>
+  <Data>
+    <Value Key="title" Text="Settings"/>
+    <Value Key="accent" Color="#2F6FD0"/>
+    <Value Key="wide" Number="240"/>
+    <Value Key="enabled" Bool="True"/>
+  </Data>
+  <Styles>
+    <Style TargetType="Button" Background="#333A42" CornerRadius="6"/>
+    <Style Class="accent" Background="#2F6FD0" Foreground="#FFFFFF"/>
+    <Style x:Name="heading" FontSize="20"/>
+  </Styles>
+  <StackPanel>
+    <TextBlock Text="{Binding title}" x:Name="heading"/>
+    <Button Content="Save" Width="{Binding wide}" Class="accent"/>
+    <Panel Background="{Binding accent}" Height="10"/>
+    <Panel Height="10" Visible="{Binding enabled}"/>
+  </StackPanel>
+</Ui>"##;
+
+    #[test]
+    fn cui_document_parses_data_styles_and_root() {
+        let document = UiDocument::parse(CUI).unwrap();
+        assert_eq!(document.data.len(), 4);
+        assert_eq!(document.sheet.len(), 3);
+        assert_eq!(document.data.get("title").and_then(|v| v.text()), Some("Settings"));
+    }
+
+    #[test]
+    fn cui_build_resolves_bindings_and_classes() {
+        let document = UiDocument::parse(CUI).unwrap();
+        let page = document.build(&NoImages).unwrap();
+        assert_eq!(page.children.len(), 4);
+        assert_eq!(page.children[0].view, node::View::Text("Settings".into()));
+        assert_eq!(page.children[0].style.font_size, 20.0, "name selector applied");
+        // Button: type style radius, class style background, bound width.
+        assert_eq!(page.children[1].style.radius, 6.0);
+        assert_eq!(page.children[1].style.background, Color::rgb(0x2F, 0x6F, 0xD0));
+        assert_eq!(page.children[1].style.width, Length::Px(240.0));
+        // Bound colour and visibility.
+        assert_eq!(page.children[2].style.background, Color::rgb(0x2F, 0x6F, 0xD0));
+        assert!(page.children[3].visible);
+    }
+
+    #[test]
+    fn cui_overrides_win_over_document_data() {
+        let document = UiDocument::parse(CUI).unwrap();
+        let overrides = crate::binding::DataContext::new()
+            .set("title", crate::binding::Value::Text("Overridden".into()))
+            .set("enabled", crate::binding::Value::Bool(false));
+        let page = document.build_with(&NoImages, &overrides).unwrap();
+        assert_eq!(page.children[0].view, node::View::Text("Overridden".into()));
+        assert!(!page.children[3].visible);
+    }
+
+    #[test]
+    fn cui_requires_a_ui_root() {
+        assert!(UiDocument::parse("<StackPanel/>").is_err());
+    }
+
+    #[test]
+    fn cui_requires_a_page_root() {
+        assert!(UiDocument::parse("<Ui><Styles/></Ui>").is_err());
+    }
+
+    #[test]
+    fn cui_rejects_two_page_roots() {
+        assert!(UiDocument::parse("<Ui><Panel/><Panel/></Ui>").is_err());
+    }
+
+    #[test]
+    fn cui_rejects_malformed_values() {
+        assert!(UiDocument::parse(r#"<Ui><Data><Value Key="x"/></Data><Panel/></Ui>"#).is_err());
+        assert!(UiDocument::parse(r#"<Ui><Data><Value Number="x"/></Data><Panel/></Ui>"#).is_err());
     }
 
     #[test]
