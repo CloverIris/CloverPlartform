@@ -23,7 +23,7 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 
 ![A .cui document rendered by the framework](docs/cui.png)
 
-> Status: **0.14 — vector paths**. The pipeline works end to end (tree →
+> Status: **0.15 — built-in controls**. The pipeline works end to end (tree →
 > layout → display list → tile-parallel raster → frame), both authoring
 > front-ends produce the same tree, layout supports flex-style `Fill`, text
 > wraps, and keyboard focus is routed. Styles, templates, bindings and animation
@@ -72,6 +72,10 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 * **Control templates.** `<Template x:Key="chip">` in a stylesheet replaces a
   control's visuals while keeping its properties; `{Binding Content}` and
   `{Binding Tag}` bind the control into the template.
+* **Controls.** `Slider`, `CheckBox`, `ComboBox` and `ScrollBar` are widgets, not
+  decoration: the framework paints them, owns the drag gesture and reports
+  `change:<name>:<value>`. Layout also honours `MinWidth`/`MaxWidth`, and text can
+  truncate with an ellipsis.
 * **Vector paths.** `<Path Data="M… L… C… Z" Fill Stroke StrokeThickness>` parses
   SVG path data and rasterises it with the same analytic coverage as glyphs, so
   icons are crisp at 1x and 2x without exporting bitmaps.

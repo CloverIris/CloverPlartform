@@ -162,6 +162,10 @@ pub struct Surface {
     press_action: Option<NodeId>,
     /// Active drag gesture, if any.
     drag: Option<DragState>,
+    /// Widget currently being dragged (slider thumb, scrollbar thumb).
+    widget_drag: Option<NodeId>,
+    /// Widget pressed and waiting for release to act (checkbox, combo).
+    widget_press: Option<NodeId>,
 }
 
 impl Surface {
@@ -177,6 +181,8 @@ impl Surface {
             pending_actions: Vec::new(),
             press_action: None,
             drag: None,
+            widget_drag: None,
+            widget_press: None,
         };
         surface.resize(width, height, scale);
         Some(surface)
@@ -589,6 +595,83 @@ impl Surface {
         self.tree.cursor_at(clover_core::Point::new(x, y))
     }
 
+    /// Handles a press on a widget. Returns true when the widget consumed it.
+    fn begin_widget(&mut self, id: NodeId, position: clover_core::Point) -> bool {
+        let kind = match self.tree.node(id).and_then(|node| node.widget.as_ref()) {
+            Some(widget) => widget.clone(),
+            None => return false,
+        };
+        match kind {
+            clover_ui::node::Widget::Slider { .. } | clover_ui::node::Widget::ScrollBar { .. } => {
+                self.widget_drag = Some(id);
+                self.drag_widget_to(id, position);
+                true
+            }
+            clover_ui::node::Widget::CheckBox { .. } => {
+                self.widget_press = Some(id);
+                true
+            }
+            clover_ui::node::Widget::ComboBox { .. } => {
+                self.widget_press = Some(id);
+                true
+            }
+        }
+    }
+
+    /// Moves a slider or scrollbar to the pointer, without emitting an action yet.
+    fn drag_widget_to(&mut self, id: NodeId, position: clover_core::Point) {
+        let Some(node) = self.tree.node_mut(id) else { return };
+        let bounds = node.bounds;
+        match &mut node.widget {
+            Some(clover_ui::node::Widget::Slider { value, min, max, show_value }) => {
+                let label = if *show_value { 34.0 } else { 0.0 };
+                let width = (bounds.w - label).max(1.0);
+                let t = ((position.x - bounds.x) / width).clamp(0.0, 1.0);
+                *value = *min + (*max - *min) * t;
+                self.tree.damage().add(bounds);
+            }
+            Some(clover_ui::node::Widget::ScrollBar { horizontal, offset, viewport, extent }) => {
+                let span = (*extent - *viewport).max(0.0);
+                let (length, start, position_along) = if *horizontal {
+                    (bounds.w, bounds.x, position.x)
+                } else {
+                    (bounds.h, bounds.y, position.y)
+                };
+                if length <= 0.0 || span <= 0.0 {
+                    return;
+                }
+                let t = ((position_along - start) / length).clamp(0.0, 1.0);
+                *offset = (t * *extent - *viewport * 0.5).clamp(0.0, span);
+                self.tree.damage().add(bounds);
+            }
+            _ => {}
+        }
+    }
+
+    /// Emits the `change:` action for a widget that was dragged.
+    fn emit_widget_change(&mut self, id: NodeId) {
+        if let Some(action) = self.tree.node(id).and_then(|node| node.widget_action()) {
+            self.pending_actions.push(action);
+        }
+    }
+
+    /// Applies a click on a widget that acts on release.
+    fn activate_widget(&mut self, id: NodeId) {
+        let Some(node) = self.tree.node_mut(id) else { return };
+        let bounds = node.bounds;
+        match &mut node.widget {
+            Some(clover_ui::node::Widget::CheckBox { checked }) => {
+                *checked = !*checked;
+            }
+            Some(clover_ui::node::Widget::ComboBox { open, .. }) => {
+                *open = !*open;
+            }
+            _ => {}
+        }
+        self.tree.damage().add(bounds);
+        self.emit_widget_change(id);
+    }
+
     /// Whether a drag gesture is in progress.
     ///
     /// Hosts use this to swap the cursor and to stop hit-testing underneath.
@@ -621,6 +704,11 @@ impl Surface {
                         let chain = self.tree.hit_chain(p.position);
                         // A drag handle claims the gesture first: dragging a panel
                         // must not also press whatever is drawn on top of it.
+                        if let Some(id) = chain.iter().copied().find_map(|id| self.tree.find_widget(id)) {
+                            if self.begin_widget(id, p.position) {
+                                return Vec::new();
+                            }
+                        }
                         if let Some(target) = chain
                             .iter()
                             .copied()
@@ -643,6 +731,17 @@ impl Surface {
                         self.press_action = self.action_target(&chain).map(|(id, _)| id);
                     }
                     clover_ui::PointerAction::Up => {
+                        if let Some(id) = self.widget_drag.take() {
+                            self.emit_widget_change(id);
+                            return Vec::new();
+                        }
+                        if let Some(id) = self.widget_press.take() {
+                            let chain = self.tree.hit_chain(p.position);
+                            if chain.iter().any(|hit| *hit == id) {
+                                self.activate_widget(id);
+                            }
+                            return Vec::new();
+                        }
                         if let Some(drag) = self.drag.take() {
                             self.pending_actions.push(format!("drag:end:{}", drag.payload));
                             self.press_action = None;
@@ -662,6 +761,17 @@ impl Surface {
                         self.tree.set_pressed(None);
                     }
                     clover_ui::PointerAction::Cancel => {
+                        if let Some(id) = self.widget_drag.take() {
+                            self.emit_widget_change(id);
+                            return Vec::new();
+                        }
+                        if let Some(id) = self.widget_press.take() {
+                            let chain = self.tree.hit_chain(p.position);
+                            if chain.iter().any(|hit| *hit == id) {
+                                self.activate_widget(id);
+                            }
+                            return Vec::new();
+                        }
                         if let Some(drag) = self.drag.take() {
                             self.pending_actions.push(format!("drag:end:{}", drag.payload));
                         }
@@ -669,6 +779,9 @@ impl Surface {
                         self.tree.set_pressed(None);
                     }
                     clover_ui::PointerAction::Move => {
+                        if let Some(id) = self.widget_drag {
+                            self.drag_widget_to(id, p.position);
+                        }
                         if let Some(drag) = self.drag.as_mut() {
                             let dx = p.position.x - drag.last.x;
                             let dy = p.position.y - drag.last.y;
@@ -915,6 +1028,73 @@ mod tests {
         let _ = surface.frame();
         assert_eq!(surface.cursor_at(40.0, 20.0), clover_ui::style::Cursor::Pointer);
         assert_eq!(surface.cursor_at(180.0, 180.0), clover_ui::style::Cursor::Default);
+    }
+
+    #[test]
+    fn slider_drag_reports_the_value() {
+        let root = clover_ui::xaml::parse(
+            r#"<Panel><Slider x:Name="size" Value="0" Min="0" Max="100" Width="200" Height="20"/></Panel>"#,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 200.0, 60.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        surface.dispatch(drag_event(PointerAction::Down, 100.0, 10.0));
+        // The track reserves 34px for the readout, so 100px of 166 is ~60%.
+        let value = match surface.tree().named("size").and_then(|node| node.widget.clone()) {
+            Some(clover_ui::node::Widget::Slider { value, .. }) => value,
+            other => panic!("expected a slider, got {other:?}"),
+        };
+        assert!(value > 50.0 && value < 70.0, "value should follow the pointer, got {value}");
+
+        surface.dispatch(drag_event(PointerAction::Move, 200.0, 10.0));
+        surface.dispatch(drag_event(PointerAction::Up, 200.0, 10.0));
+        let action = surface.take_action().expect("a change action");
+        assert!(action.starts_with("change:size:"), "got {action}");
+    }
+
+    #[test]
+    fn checkbox_click_toggles_and_reports() {
+        let root = clover_ui::xaml::parse(
+            r#"<Panel><CheckBox x:Name="lock" IsChecked="false"/></Panel>"#,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 100.0, 40.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        surface.dispatch(drag_event(PointerAction::Down, 7.0, 7.0));
+        surface.dispatch(drag_event(PointerAction::Up, 7.0, 7.0));
+        let checked = match surface.tree().named("lock").and_then(|node| node.widget.clone()) {
+            Some(clover_ui::node::Widget::CheckBox { checked }) => checked,
+            other => panic!("expected a checkbox, got {other:?}"),
+        };
+        assert!(checked, "the box should be checked");
+        assert_eq!(surface.take_action().as_deref(), Some("change:lock:1"));
+    }
+
+    #[test]
+    fn scrollbar_drag_moves_the_offset() {
+        let root = clover_ui::xaml::parse(
+            r#"<Panel><ScrollBar x:Name="bar" Orientation="Vertical" Offset="0" Viewport="100" Extent="400" Width="10" Height="100"/></Panel>"#,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 40.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        surface.dispatch(drag_event(PointerAction::Down, 5.0, 50.0));
+        surface.dispatch(drag_event(PointerAction::Up, 5.0, 50.0));
+        let offset = match surface.tree().named("bar").and_then(|node| node.widget.clone()) {
+            Some(clover_ui::node::Widget::ScrollBar { offset, .. }) => offset,
+            other => panic!("expected a scrollbar, got {other:?}"),
+        };
+        assert!(offset > 100.0, "halfway down a 400px extent should pass 100, got {offset}");
+        assert!(surface.take_action().is_some(), "dragging reports an action");
     }
 
     #[test]

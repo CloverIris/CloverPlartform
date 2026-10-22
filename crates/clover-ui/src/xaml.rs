@@ -694,6 +694,47 @@ fn build(
                 None => return err(xml.offset, format!("image source '{source}' was not registered")),
             }
         }
+        "slider" => {
+            let name = xml.attr("x:Name").or_else(|| xml.attr("Name")).unwrap_or("");
+            let value = xml.attr_f32("Value").unwrap_or(0.0);
+            let min = xml.attr_f32("Min").unwrap_or(0.0);
+            let max = xml.attr_f32("Max").unwrap_or(100.0);
+            let mut slider = node::slider(name, value, min, max);
+            if let Some(raw) = xml.attr("ShowValue") {
+                if let Some(node::Widget::Slider { show_value, .. }) = &mut slider.widget {
+                    *show_value = !raw.trim().eq_ignore_ascii_case("false");
+                }
+            }
+            slider
+        }
+        "checkbox" => {
+            let name = xml.attr("x:Name").or_else(|| xml.attr("Name")).unwrap_or("");
+            let checked = xml
+                .attr("IsChecked")
+                .map(|v| v.trim().eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            node::checkbox(name, checked)
+        }
+        "combobox" | "dropdown" => {
+            let name = xml.attr("x:Name").or_else(|| xml.attr("Name")).unwrap_or("");
+            let items: Vec<String> = xml
+                .attr("Items")
+                .map(|raw| raw.split(',').map(|item| context.data.resolve_text(item.trim())).collect())
+                .unwrap_or_default();
+            let selected = xml.attr("SelectedIndex").and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+            node::combo(name, items, selected)
+        }
+        "scrollbar" => {
+            let name = xml.attr("x:Name").or_else(|| xml.attr("Name")).unwrap_or("");
+            let horizontal = xml
+                .attr("Orientation")
+                .map(|v| v.trim().eq_ignore_ascii_case("horizontal"))
+                .unwrap_or(false);
+            let offset = xml.attr_f32("Offset").unwrap_or(0.0);
+            let viewport = xml.attr_f32("Viewport").unwrap_or(100.0);
+            let extent = xml.attr_f32("Extent").unwrap_or(100.0);
+            node::scrollbar(name, horizontal, offset, viewport, extent)
+        }
         "path" | "icon" => {
             let data = xml
                 .attr("Data")
@@ -924,6 +965,18 @@ fn apply_common_attributes(
     }
     if let Some(raw) = xml.attr("IsHitTestVisible") {
         node.style.hit_test_visible = !raw.trim().eq_ignore_ascii_case("false");
+    }
+    if let Some(raw) = xml.attr("MinWidth") {
+        node.style.min_width = raw.trim().parse().ok();
+    }
+    if let Some(raw) = xml.attr("MaxWidth") {
+        node.style.max_width = raw.trim().parse().ok();
+    }
+    if let Some(raw) = xml.attr("Ellipsis") {
+        node.style.ellipsis = raw.trim().eq_ignore_ascii_case("true");
+    }
+    if let Some(raw) = xml.attr("Accent") {
+        node.style.accent = parse_color(raw, xml.offset)?;
     }
     if let crate::node::View::Path { fill, stroke, stroke_width, .. } = &mut node.view {
         if let Some(raw) = xml.attr("Fill").or_else(|| xml.attr("Foreground")) {
@@ -1244,6 +1297,46 @@ mod tests {
     fn templates_require_a_key_and_a_body() {
         assert!(parse_stylesheet(r#"<Styles><Template><Panel/></Template></Styles>"#).is_err());
         assert!(parse_stylesheet(r#"<Styles><Template x:Key="x"></Template></Styles>"#).is_err());
+    }
+
+    #[test]
+    fn parses_widgets() {
+        let page = parse(
+            r##"<Panel>
+                  <Slider x:Name="size" Value="12" Min="1" Max="64"/>
+                  <CheckBox x:Name="lock" IsChecked="true"/>
+                  <ComboBox x:Name="blend" Items="Normal,Multiply,Screen" SelectedIndex="1"/>
+                  <ScrollBar x:Name="scroll" Orientation="Horizontal" Offset="10" Viewport="50" Extent="200"/>
+                </Panel>"##,
+            &NoImages,
+        )
+        .unwrap();
+        assert!(matches!(page.children[0].widget, Some(node::Widget::Slider { value, min, max, .. })
+            if (value - 12.0).abs() < 0.01 && (min - 1.0).abs() < 0.01 && (max - 64.0).abs() < 0.01));
+        assert!(matches!(page.children[1].widget, Some(node::Widget::CheckBox { checked: true })));
+        match &page.children[2].widget {
+            Some(node::Widget::ComboBox { items, selected, .. }) => {
+                assert_eq!(items.len(), 3);
+                assert_eq!(*selected, 1);
+            }
+            other => panic!("expected a combo, got {other:?}"),
+        }
+        match &page.children[3].widget {
+            Some(node::Widget::ScrollBar { horizontal, offset, viewport, extent }) => {
+                assert!(*horizontal);
+                assert_eq!((*offset, *viewport, *extent), (10.0, 50.0, 200.0));
+            }
+            other => panic!("expected a scrollbar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_size_constraints() {
+        let page = parse(r#"<Panel MinWidth="120" MaxWidth="400"/>"#, &NoImages).unwrap();
+        assert_eq!(page.style.min_width, Some(120.0));
+        assert_eq!(page.style.max_width, Some(400.0));
+        assert_eq!(page.style.clamp_width(10.0), 120.0);
+        assert_eq!(page.style.clamp_width(900.0), 400.0);
     }
 
     #[test]

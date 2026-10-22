@@ -133,6 +133,10 @@ fn walk(
         }
     };
 
+    if let Some(widget) = &node.widget {
+        paint_widget(node, widget, rect, scale, clip, out, text, opacity);
+    }
+
     match &node.style.brush {
         Some(clover_ui::style::Brush::Texture { handle, fit, opacity }) => {
             if let Some(image) = images.get(*handle) {
@@ -216,7 +220,12 @@ fn walk(
                 } else {
                     None
                 };
-                let lines = text.wrap_lines(content, font_px, max_width);
+                let content = if node.style.ellipsis && !node.style.wrap {
+                    ellipsize(content, content_box.w, font_px, text)
+                } else {
+                    content.clone()
+                };
+                let lines = text.wrap_lines(&content, font_px, max_width);
                 let block_height = line_height * lines.len() as f32;
                 let top = content_box.y + ((content_box.h - block_height) * 0.5).max(0.0);
                 let ascent = text.ascent(font_px);
@@ -386,6 +395,167 @@ fn push_scrollbar(node: &Node, rect: Rect, scale: f32, clip: Rect, out: &mut Vec
 }
 
 /// Fits an image of `natural` size into `box_rect` according to `fit`.
+/// Truncates `value` to fit `width`, appending an ellipsis.
+fn ellipsize(value: &str, width: f32, font_px: f32, text: &TextEngine) -> String {
+    if width <= 0.0 || text.line_width(value, font_px) <= width {
+        return value.to_string();
+    }
+    let ellipsis = "\u{2026}";
+    let budget = (width - text.line_width(ellipsis, font_px)).max(0.0);
+    let mut out = String::new();
+    for ch in value.chars() {
+        let mut candidate = out.clone();
+        candidate.push(ch);
+        if text.line_width(&candidate, font_px) > budget {
+            break;
+        }
+        out = candidate;
+    }
+    out.push_str(ellipsis);
+    out
+}
+
+/// Paints a built-in control using the same primitives as everything else.
+fn paint_widget(
+    node: &Node,
+    widget: &clover_ui::node::Widget,
+    rect: Rect,
+    scale: f32,
+    clip: Rect,
+    out: &mut Vec<DrawCmd>,
+    text: &TextEngine,
+    opacity: f32,
+) {
+    use clover_ui::node::Widget;
+    let with_opacity = |c: Color| -> Premul {
+        if opacity >= 1.0 {
+            c.premultiply()
+        } else {
+            c.scale_alpha(opacity).premultiply()
+        }
+    };
+    let accent = with_opacity(node.style.accent);
+    let track = if node.style.background.a > 0 {
+        with_opacity(node.style.background)
+    } else {
+        with_opacity(Color::rgb(0x15, 0x15, 0x15))
+    };
+    let radius = node.style.radius * scale;
+
+    match widget {
+        Widget::Slider { value, min, max, show_value } => {
+            let label_width = if *show_value { 34.0 * scale } else { 0.0 };
+            let track_rect = Rect::new(
+                rect.x,
+                rect.y + (rect.h - 4.0 * scale) * 0.5,
+                (rect.w - label_width).max(1.0),
+                4.0 * scale,
+            );
+            out.push(DrawCmd::RoundedRect { rect: track_rect, radius: 2.0 * scale, color: track, clip });
+            let span = (*max - *min).max(f32::EPSILON);
+            let t = ((*value - *min) / span).clamp(0.0, 1.0);
+            let filled = Rect::new(track_rect.x, track_rect.y, track_rect.w * t, track_rect.h);
+            if filled.w > 0.0 {
+                out.push(DrawCmd::RoundedRect { rect: filled, radius: 2.0 * scale, color: accent, clip });
+            }
+            let thumb = 9.0 * scale;
+            let thumb_rect = Rect::new(
+                track_rect.x + track_rect.w * t - thumb * 0.5,
+                rect.y + (rect.h - thumb) * 0.5,
+                thumb,
+                thumb,
+            );
+            out.push(DrawCmd::RoundedRect { rect: thumb_rect, radius: thumb * 0.5, color: accent, clip });
+            if *show_value {
+                let label = format!("{value:.0}");
+                let px = node.style.font_size * scale;
+                let baseline = rect.y + (rect.h - text.line_height(px)) * 0.5 + text.ascent(px);
+                let run = text.shape(&label, px, rect.right() - label_width + 6.0 * scale, baseline);
+                if !run.is_empty() {
+                    out.push(DrawCmd::Text {
+                        run: Arc::new(run),
+                        color: with_opacity(node.style.text_color),
+                        clip,
+                    });
+                }
+            }
+        }
+        Widget::CheckBox { checked } => {
+            out.push(DrawCmd::RoundedRect {
+                rect,
+                radius: radius.max(2.0 * scale),
+                color: if *checked { accent } else { track },
+                clip,
+            });
+            if *checked {
+                let thickness = (1.6 * scale).max(1.0);
+                let points = [
+                    (rect.x + rect.w * 0.24, rect.y + rect.h * 0.52),
+                    (rect.x + rect.w * 0.44, rect.y + rect.h * 0.72),
+                    (rect.x + rect.w * 0.78, rect.y + rect.h * 0.30),
+                ];
+                for pair in points.windows(2) {
+                    push_tick(out, pair[0], pair[1], thickness, with_opacity(Color::WHITE), clip);
+                }
+            }
+        }
+        Widget::ComboBox { items, selected, .. } => {
+            out.push(DrawCmd::RoundedRect { rect, radius, color: track, clip });
+            if let Some(item) = items.get(*selected) {
+                let px = node.style.font_size * scale;
+                let baseline = rect.y + (rect.h - text.line_height(px)) * 0.5 + text.ascent(px);
+                let run = text.shape(item, px, rect.x + 6.0 * scale, baseline);
+                if !run.is_empty() {
+                    out.push(DrawCmd::Text {
+                        run: Arc::new(run),
+                        color: with_opacity(node.style.text_color),
+                        clip,
+                    });
+                }
+            }
+            let cx = rect.right() - 12.0 * scale;
+            let cy = rect.y + rect.h * 0.5;
+            let w = 3.5 * scale;
+            let chevron = with_opacity(node.style.text_color);
+            push_tick(out, (cx - w, cy - w * 0.5), (cx, cy + w * 0.6), 1.4 * scale, chevron, clip);
+            push_tick(out, (cx, cy + w * 0.6), (cx + w, cy - w * 0.5), 1.4 * scale, chevron, clip);
+        }
+        Widget::ScrollBar { horizontal, offset, viewport, extent } => {
+            let bar_radius = radius.min(rect.w.min(rect.h) * 0.5);
+            out.push(DrawCmd::RoundedRect { rect, radius: bar_radius, color: track, clip });
+            let span = extent.max(f32::EPSILON);
+            let visible = (viewport / span).clamp(0.05, 1.0);
+            let travel = (offset / span).clamp(0.0, 1.0 - visible);
+            let thumb = if *horizontal {
+                Rect::new(rect.x + rect.w * travel, rect.y, rect.w * visible, rect.h)
+            } else {
+                Rect::new(rect.x, rect.y + rect.h * travel, rect.w, rect.h * visible)
+            };
+            out.push(DrawCmd::RoundedRect { rect: thumb, radius: bar_radius, color: accent, clip });
+        }
+    }
+}
+
+/// A short straight tick, drawn as a thin rounded bar.
+///
+/// Axis-aligned segments cover every control here; a rotated quad would be
+/// overkill for a 2px check mark at UI sizes.
+fn push_tick(out: &mut Vec<DrawCmd>, a: (f32, f32), b: (f32, f32), thickness: f32, color: Premul, clip: Rect) {
+    let mut rect = Rect::new(
+        a.0.min(b.0) - thickness * 0.5,
+        a.1.min(b.1) - thickness * 0.5,
+        (b.0 - a.0).abs() + thickness,
+        (b.1 - a.1).abs() + thickness,
+    );
+    if rect.w < thickness {
+        rect.w = thickness;
+    }
+    if rect.h < thickness {
+        rect.h = thickness;
+    }
+    out.push(DrawCmd::RoundedRect { rect, radius: thickness * 0.5, color, clip });
+}
+
 fn fit_rect(box_rect: Rect, fit: clover_ui::Fit, natural: Size) -> Rect {
     use clover_ui::Fit;
     if natural.is_empty() || box_rect.is_empty() {

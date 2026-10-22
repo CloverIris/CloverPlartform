@@ -75,6 +75,26 @@ pub fn measure(node: &Node, available: Size, metrics: &dyn LayoutMetrics) -> Siz
         explicit_h.map(|h| (h - padding.vertical()).max(0.0)).unwrap_or(available.h),
     );
 
+    if let Some(widget) = &node.widget {
+        let natural = match widget {
+            crate::node::Widget::Slider { show_value, .. } => {
+                Size::new(if *show_value { 140.0 } else { 100.0 }, 20.0)
+            }
+            crate::node::Widget::CheckBox { .. } => Size::new(14.0, 14.0),
+            crate::node::Widget::ComboBox { .. } => Size::new(120.0, 20.0),
+            crate::node::Widget::ScrollBar { horizontal, .. } => {
+                if *horizontal {
+                    Size::new(100.0, 10.0)
+                } else {
+                    Size::new(10.0, 100.0)
+                }
+            }
+        };
+        let width = style.clamp_width(explicit_w.unwrap_or(natural.w));
+        let height = style.clamp_height(explicit_h.unwrap_or(natural.h));
+        return Size::new(width, height);
+    }
+
     if let Some(columns) = style.grid_columns {
         return measure_grid(node, available, metrics, columns.max(1) as usize);
     }

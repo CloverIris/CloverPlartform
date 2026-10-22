@@ -80,6 +80,35 @@ pub enum View {
     },
 }
 
+/// A built-in control.
+///
+/// Widgets are state plus behaviour: the framework paints them and owns the
+/// interaction, the host binds and reacts to actions. Every one of them emits
+/// `change:<name>:<value>` when its value moves.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Widget {
+    /// Horizontal value slider with an optional numeric readout.
+    Slider { value: f32, min: f32, max: f32, show_value: bool },
+    /// Two-state box.
+    CheckBox { checked: bool },
+    /// Drop-down list; the popup lives in the overlay.
+    ComboBox { items: Vec<String>, selected: usize, open: bool },
+    /// Scrollbar thumb over a track.
+    ScrollBar { horizontal: bool, offset: f32, viewport: f32, extent: f32 },
+}
+
+impl Widget {
+    /// Value reported in the `change:` action.
+    fn action_value(&self) -> String {
+        match self {
+            Widget::Slider { value, .. } => format!("{value:.0}"),
+            Widget::CheckBox { checked } => if *checked { "1".into() } else { "0".into() },
+            Widget::ComboBox { selected, .. } => selected.to_string(),
+            Widget::ScrollBar { offset, .. } => format!("{offset:.0}"),
+        }
+    }
+}
+
 /// Text an input method is composing.
 ///
 /// The composition is *preview* text: it is displayed inline at the caret with an
@@ -200,6 +229,8 @@ pub struct Node {
     /// The framework decides *when* activation happens; the host decides what the
     /// command means. `None` means the node is not actionable.
     pub action: Option<String>,
+    /// Built-in control attached to this node.
+    pub widget: Option<Widget>,
     /// Identifies this node as a drag handle.
     ///
     /// Dragging reports `drag:begin:<payload>`, `drag:move:<payload>:<dx>:<dy>`
@@ -226,6 +257,7 @@ impl Default for Node {
             animation: None,
             classes: Vec::new(),
             action: None,
+            widget: None,
             drag_payload: None,
         }
     }
@@ -314,6 +346,27 @@ impl Node {
     pub fn direction(mut self, direction: Orientation) -> Self {
         self.style.direction = direction;
         self
+    }
+
+    /// Replaces the widget value, clamping to its range.
+    pub fn set_widget_value(&mut self, value: f32) {
+        match &mut self.widget {
+            Some(Widget::Slider { value: current, min, max, .. }) => {
+                *current = value.clamp(*min, *max);
+            }
+            Some(Widget::ScrollBar { offset, viewport, extent, .. }) => {
+                let max = (*extent - *viewport).max(0.0);
+                *offset = value.clamp(0.0, max);
+            }
+            _ => {}
+        }
+    }
+
+    /// A widget's reported value, if it has one.
+    pub fn widget_action(&self) -> Option<String> {
+        let name = self.name.as_deref()?;
+        let widget = self.widget.as_ref()?;
+        Some(format!("change:{name}:{}", widget.action_value()))
     }
 
     /// Sets the fill and stroke of a path node.
@@ -527,6 +580,14 @@ impl Node {
         }
     }
 
+    /// Nearest ancestor of `id` (inclusive) carrying a widget.
+    pub fn find_widget(&self, id: NodeId) -> Option<NodeId> {
+        if self.widget.is_some() {
+            return Some(self.id);
+        }
+        self.children.iter().find_map(|child| child.find_widget(id))
+    }
+
     /// Nearest ancestor of `id` (inclusive) that is a drag handle.
     pub fn find_drag_ancestor(&self, id: NodeId) -> Option<(NodeId, &str)> {
         fn walk<'a>(
@@ -686,6 +747,46 @@ pub fn grid(columns: u32) -> Node {
     let mut node = Node::new();
     node.style.grid_columns = Some(columns.max(1));
     node.style.direction = Orientation::Vertical;
+    node
+}
+
+/// A horizontal slider, `name` identifies it in `change:` actions.
+pub fn slider(name: &str, value: f32, min: f32, max: f32) -> Node {
+    let mut node = Node::new().height(crate::style::Length::Px(20.0));
+    node.name = Some(name.to_string());
+    node.widget = Some(Widget::Slider { value, min, max, show_value: true });
+    node.style.cursor = crate::style::Cursor::Pointer;
+    node
+}
+
+/// A checkbox.
+pub fn checkbox(name: &str, checked: bool) -> Node {
+    let mut node = Node::new().size(crate::style::Length::Px(14.0), crate::style::Length::Px(14.0));
+    node.name = Some(name.to_string());
+    node.widget = Some(Widget::CheckBox { checked });
+    node.style.cursor = crate::style::Cursor::Pointer;
+    node
+}
+
+/// A drop-down list.
+pub fn combo(name: &str, items: Vec<String>, selected: usize) -> Node {
+    let mut node = Node::new();
+    node.name = Some(name.to_string());
+    node.widget = Some(Widget::ComboBox { items, selected, open: false });
+    node.style.cursor = crate::style::Cursor::Pointer;
+    node
+}
+
+/// A scrollbar.
+pub fn scrollbar(name: &str, horizontal: bool, offset: f32, viewport: f32, extent: f32) -> Node {
+    let mut node = Node::new();
+    node.name = Some(name.to_string());
+    node.widget = Some(Widget::ScrollBar { horizontal, offset, viewport, extent });
+    node.style.cursor = if horizontal {
+        crate::style::Cursor::ResizeHorizontal
+    } else {
+        crate::style::Cursor::ResizeVertical
+    };
     node
 }
 
@@ -1032,6 +1133,11 @@ impl UiTree {
     /// Nearest ancestor of `id` (inclusive) that is a drag handle.
     pub fn find_drag_ancestor(&self, id: NodeId) -> Option<(NodeId, &str)> {
         self.root.find_drag_ancestor(id)
+    }
+
+    /// Nearest ancestor of `id` (inclusive) carrying a widget.
+    pub fn find_widget(&self, id: NodeId) -> Option<NodeId> {
+        self.root.find_widget(id)
     }
 
     /// Replaces the overlay root. Pass `None` to remove it.

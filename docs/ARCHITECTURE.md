@@ -162,6 +162,27 @@ Today `hdr_raster` is false, so an HDR request lands on `Bgra8Sdr` with
 silent one — the whole point of recording the reason is that a host can surface
 it and a future float raster path only has to flip one flag.
 
+## 5a1. Controls
+
+A layout engine with no controls forces every host to re-invent sliders, and the
+second drawer always looks different from the first. So controls live in the
+framework as `Widget` values on a node:
+
+| widget | painted by | gesture | action |
+|---|---|---|---|
+| `Slider` | track, fill, thumb, readout | press-drag anywhere on the track | `change:<name>:<value>` |
+| `CheckBox` | box, check mark | click | `change:<name>:0\|1` |
+| `ComboBox` | box, label, chevron | click | `change:<name>:<index>` |
+| `ScrollBar` | track, thumb | press-drag, thumb-relative | `change:<name>:<offset>` |
+
+They paint with the same primitives as everything else, so a control inherits
+radius, accent, opacity and clipping for free. Widgets are the one place where the
+framework owns behaviour *and* appearance: a host that restyles a slider changes
+its colours, not its mechanics.
+
+`MinWidth`/`MaxWidth`/`MinHeight`/`MaxHeight` were implemented long ago but never
+applied by the layout pass — they are now, which docking will need next.
+
 ## 5b1. Vector paths
 
 Icons cannot be bitmaps: the toolbar draws at 1x and 2x, and an exported PNG is
