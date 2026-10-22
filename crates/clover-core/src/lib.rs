@@ -7,8 +7,10 @@
 pub mod color;
 pub mod damage;
 pub mod geometry;
+pub mod path;
 pub mod thread;
 
 pub use color::{Color, Premul};
 pub use damage::Damage;
 pub use geometry::{Align, Edges, Orientation, Point, Rect, Size};
+pub use path::{PathCmd, PathGeometry};

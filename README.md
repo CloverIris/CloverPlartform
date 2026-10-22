@@ -23,7 +23,7 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 
 ![A .cui document rendered by the framework](docs/cui.png)
 
-> Status: **0.13 — overlay layer, cursors, rewrite plan**. The pipeline works end to end (tree →
+> Status: **0.14 — vector paths**. The pipeline works end to end (tree →
 > layout → display list → tile-parallel raster → frame), both authoring
 > front-ends produce the same tree, layout supports flex-style `Fill`, text
 > wraps, and keyboard focus is routed. Styles, templates, bindings and animation
@@ -72,6 +72,9 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 * **Control templates.** `<Template x:Key="chip">` in a stylesheet replaces a
   control's visuals while keeping its properties; `{Binding Content}` and
   `{Binding Tag}` bind the control into the template.
+* **Vector paths.** `<Path Data="M… L… C… Z" Fill Stroke StrokeThickness>` parses
+  SVG path data and rasterises it with the same analytic coverage as glyphs, so
+  icons are crisp at 1x and 2x without exporting bitmaps.
 * **Overlay layer.** `<Overlay>` in a `.cui` document paints above the page and
   takes hits first, so menus, dropdowns, tooltips and toasts are never clipped by
   the node that opened them. The wrapper passes clicks through; only the elements

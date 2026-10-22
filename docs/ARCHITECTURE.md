@@ -162,6 +162,22 @@ Today `hdr_raster` is false, so an HDR request lands on `Bgra8Sdr` with
 silent one — the whole point of recording the reason is that a host can surface
 it and a future float raster path only has to flip one flag.
 
+## 5b1. Vector paths
+
+Icons cannot be bitmaps: the toolbar draws at 1x and 2x, and an exported PNG is
+wrong at every scale but one.
+
+`clover-core::path` parses SVG path data (`M L H V C S Q T Z`, absolute and
+relative) into a flat command list with cached bounds. `clover-render::path`
+rasterises it with **the same rasteriser as text** — `ab_glyph_rasterizer`, which
+produces analytic coverage. That is why icon edges look identical to glyph edges
+rather than merely similar.
+
+Fill closes open subpaths, matching SVG. Stroke flattens curves and draws a quad
+per segment plus a twelve-sided round join: solid corners at any width without
+implementing mitre joins. Arcs (`A`) are not supported yet; the icons here are
+built from curves.
+
 ## 5c1. Overlay
 
 Popups cannot live in the page tree: a dropdown opened from a toolbar button would

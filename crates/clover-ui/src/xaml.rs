@@ -694,6 +694,24 @@ fn build(
                 None => return err(xml.offset, format!("image source '{source}' was not registered")),
             }
         }
+        "path" | "icon" => {
+            let data = xml
+                .attr("Data")
+                .or_else(|| xml.attr("Path"))
+                .ok_or_else(|| XamlError { message: "<Path> needs Data".into(), offset: xml.offset })?;
+            let geometry = clover_core::PathGeometry::from_svg(data).ok_or_else(|| XamlError {
+                message: format!("bad path data '{data}'"),
+                offset: xml.offset,
+            })?;
+            let mut path = node::path("");
+            path.view = node::View::Path {
+                geometry: std::sync::Arc::new(geometry),
+                fill: None,
+                stroke: None,
+                stroke_width: 0.0,
+            };
+            path
+        }
         "textbox" | "textfield" => {
             let text = xml.attr("Text").map(|v| context.data.resolve_text(v)).unwrap_or_default();
             let placeholder = xml
@@ -906,6 +924,17 @@ fn apply_common_attributes(
     }
     if let Some(raw) = xml.attr("IsHitTestVisible") {
         node.style.hit_test_visible = !raw.trim().eq_ignore_ascii_case("false");
+    }
+    if let crate::node::View::Path { fill, stroke, stroke_width, .. } = &mut node.view {
+        if let Some(raw) = xml.attr("Fill").or_else(|| xml.attr("Foreground")) {
+            *fill = Some(parse_color(raw, xml.offset)?);
+        }
+        if let Some(raw) = xml.attr("Stroke") {
+            *stroke = Some(parse_color(raw, xml.offset)?);
+        }
+        if let Some(value) = xml.attr_f32("StrokeThickness") {
+            *stroke_width = value.max(0.0);
+        }
     }
     if let Some(raw) = xml.attr("Cursor") {
         node.style.cursor = match raw.trim().to_ascii_lowercase().as_str() {

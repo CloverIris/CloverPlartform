@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use clover_core::{Align, Color, Premul, Rect, Size};
+use clover_core::{Align, Color, Point, Premul, Rect, Size};
 use clover_ui::{ImageHandle, Node, SurfaceHandle, UiTree, View};
 
 use crate::canvas::ImagePixels;
@@ -40,6 +40,18 @@ pub enum DrawCmd {
     Text {
         run: Arc<TextRun>,
         color: Premul,
+        clip: Rect,
+    },
+    /// A vector path, rasterised at draw time.
+    Path {
+        geometry: Arc<clover_core::PathGeometry>,
+        /// Physical position of the path's own origin.
+        origin: Point,
+        /// Window scale, so the path is crisp at 2x.
+        scale: f32,
+        fill: Option<Premul>,
+        stroke: Option<Premul>,
+        stroke_width: f32,
         clip: Rect,
     },
     /// A gradient-filled box.
@@ -286,6 +298,20 @@ fn walk(
                     rect: Rect::new(caret_x, caret_top, (1.5 * scale).max(1.0), caret_height),
                     radius: 0.0,
                     color: with_opacity(node.style.text_color),
+                    clip,
+                });
+            }
+        }
+        View::Path { geometry, fill, stroke, stroke_width } => {
+            if fill.is_some() || *stroke_width > 0.0 {
+                let content_box = node.style.padding.deflate(node.bounds);
+                out.push(DrawCmd::Path {
+                    geometry: Arc::clone(geometry),
+                    origin: Point::new(content_box.x * scale, content_box.y * scale),
+                    scale,
+                    fill: fill.as_ref().map(|color| with_opacity(*color)),
+                    stroke: stroke.as_ref().map(|color| with_opacity(*color)),
+                    stroke_width: *stroke_width * scale,
                     clip,
                 });
             }

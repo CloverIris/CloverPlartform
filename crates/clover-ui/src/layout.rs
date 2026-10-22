@@ -111,6 +111,13 @@ pub fn measure(node: &Node, available: Size, metrics: &dyn LayoutMetrics) -> Siz
             content.w = content.w.max(capped);
             content.h = content.h.max(text_size.h);
         }
+        View::Path { geometry, stroke_width, .. } => {
+            let bounds = geometry.bounds();
+            let pad = stroke_width * 0.5;
+            let natural = Size::new(bounds.w + pad * 2.0, bounds.h + pad * 2.0);
+            content.w = content.w.max(natural.w);
+            content.h = content.h.max(natural.h);
+        }
         View::TextInput { text, placeholder, caret, composition } => {
             let (displayed, _) = crate::node::text_input_display(text, composition.as_ref(), *caret);
             let shown = if displayed.is_empty() { placeholder } else { &displayed };

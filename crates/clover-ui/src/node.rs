@@ -59,6 +59,14 @@ pub enum View {
     Image { handle: ImageHandle, fit: Fit },
     /// A child surface whose pixels are written by another thread.
     Surface { handle: SurfaceHandle },
+    /// A vector path, optionally filled and stroked.
+    Path {
+        geometry: std::sync::Arc<clover_core::PathGeometry>,
+        fill: Option<clover_core::Color>,
+        stroke: Option<clover_core::Color>,
+        /// Stroke width in logical pixels.
+        stroke_width: f32,
+    },
     /// An editable single-line text field.
     TextInput {
         /// Current contents.
@@ -305,6 +313,23 @@ impl Node {
 
     pub fn direction(mut self, direction: Orientation) -> Self {
         self.style.direction = direction;
+        self
+    }
+
+    /// Sets the fill and stroke of a path node.
+    pub fn filled(mut self, color: clover_core::Color) -> Self {
+        if let View::Path { fill, .. } = &mut self.view {
+            *fill = Some(color);
+        }
+        self
+    }
+
+    /// Strokes a path node.
+    pub fn stroked(mut self, color: clover_core::Color, width: f32) -> Self {
+        if let View::Path { stroke, stroke_width, .. } = &mut self.view {
+            *stroke = Some(color);
+            *stroke_width = width;
+        }
         self
     }
 
@@ -661,6 +686,18 @@ pub fn grid(columns: u32) -> Node {
     let mut node = Node::new();
     node.style.grid_columns = Some(columns.max(1));
     node.style.direction = Orientation::Vertical;
+    node
+}
+
+/// A vector shape from SVG path data.
+pub fn path(data: &str) -> Node {
+    let mut node = Node::new();
+    node.view = View::Path {
+        geometry: std::sync::Arc::new(clover_core::PathGeometry::from_svg(data).unwrap_or_default()),
+        fill: None,
+        stroke: None,
+        stroke_width: 0.0,
+    };
     node
 }
 

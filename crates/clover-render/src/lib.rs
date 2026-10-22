@@ -7,6 +7,7 @@
 //! that changed, spread across cores.
 
 pub mod canvas;
+pub mod path;
 pub mod context;
 pub mod display_list;
 pub mod image;

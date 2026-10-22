@@ -211,6 +211,23 @@ fn render_tile(list: &DisplayList, tile: Rect, clear: Premul) -> Canvas {
                     }
                 }
             }
+            DrawCmd::Path { geometry, origin, scale, fill, stroke, stroke_width, clip } => {
+                let o = clover_core::Point::new(origin.x + dx, origin.y + dy);
+                let c = clip.offset(dx, dy).intersect(local_bounds);
+                if c.is_empty() {
+                    continue;
+                }
+                if let Some(color) = fill {
+                    if let Some(mask) = crate::path::rasterize(geometry, *scale, o, true, 0.0) {
+                        canvas.blend_mask(mask.origin, mask.width, mask.height, &mask.coverage, *color, c);
+                    }
+                }
+                if let Some(color) = stroke {
+                    if let Some(mask) = crate::path::rasterize(geometry, *scale, o, false, *stroke_width) {
+                        canvas.blend_mask(mask.origin, mask.width, mask.height, &mask.coverage, *color, c);
+                    }
+                }
+            }
             DrawCmd::Surface { .. } => {
                 // Filled in by the compositor, not by a tile.
             }

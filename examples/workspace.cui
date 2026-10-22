@@ -38,6 +38,22 @@
       <Button Content="Brush"/>
       <Button Content="Eraser"/>
       <Button Content="Fill"/>
+      <StackPanel Orientation="Horizontal" Spacing="6">
+        <Panel Width="28" Height="28" Background="#343B44" CornerRadius="6" Cursor="pointer">
+          <Path Data="M3 13 L9 7 L11 9 L5 15 Z M9 5 L11 3 L13 5 L11 7 Z" Fill="#E8ECF0" Margin="5,5,5,5"/>
+        </Panel>
+        <Panel Width="28" Height="28" Background="#343B44" CornerRadius="6" Cursor="pointer">
+          <Path Data="M2 8 L8 3 L14 8 L8 13 Z M2 11 L8 16 L14 11" Fill="#E8ECF0" Stroke="#E8ECF0"
+                StrokeThickness="1.2" Margin="5,4,5,4"/>
+        </Panel>
+        <Panel Width="28" Height="28" Background="#343B44" CornerRadius="6" Cursor="pointer">
+          <Path Data="M8 2 C10 6 12 7 12 10 C12 12.2 10.2 14 8 14 C5.8 14 4 12.2 4 10 C4 7 6 6 8 2 Z"
+                Fill="#5B9CFF" Margin="5,4,5,4"/>
+        </Panel>
+        <Panel Width="28" Height="28" Background="#343B44" CornerRadius="6" Cursor="pointer">
+          <Path Data="M4 2 L4 15 L8 11 L11 16 L13 15 L10 10 L14 10 Z" Fill="#E8ECF0" Margin="5,4,5,4"/>
+        </Panel>
+      </StackPanel>
       <Button Content="Chip" Template="chip" Cursor="pointer"/>
       <Button Content="Menu ▲" Cursor="pointer"/>
       <TextBox x:Name="filter" Text="{Binding filter}" Placeholder="Filter layers..."

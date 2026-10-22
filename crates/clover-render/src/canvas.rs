@@ -261,6 +261,38 @@ impl Canvas {
         }
     }
 
+    /// Blends an 8-bit coverage mask with a solid colour.
+    ///
+    /// Path rasterisation produces coverage, not colour, so the same mask serves
+    /// any fill and any blend mode later.
+    pub fn blend_mask(
+        &mut self,
+        origin: Point,
+        width: u32,
+        height: u32,
+        coverage: &[u8],
+        color: Premul,
+        clip: Rect,
+    ) {
+        let base = color;
+        for y in 0..height {
+            let py = origin.y as i32 + y as i32;
+            for x in 0..width {
+                let alpha = coverage[(y as usize) * width as usize + x as usize];
+                if alpha == 0 {
+                    continue;
+                }
+                let px = origin.x as i32 + x as i32;
+                let covered = base.with_coverage(alpha);
+                // `with_coverage` scales the mask, but the destination blend
+                // still needs the clip test.
+                if clip.contains(Point::new(px as f32 + 0.5, py as f32 + 0.5)) {
+                    self.blend(px, py, covered, clip);
+                }
+            }
+        }
+    }
+
     /// Blits a premultiplied source image with alpha, scaled into `dest`.
     ///
     /// Uses bilinear sampling when scaling so UI images stay smooth.
