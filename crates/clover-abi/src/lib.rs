@@ -1081,6 +1081,84 @@ pub unsafe extern "C" fn clover_surface_bind_direct(
     }
 }
 
+/// Replaces a combo box's items from a comma-separated list.
+///
+/// The host supplies the real list, so the popup can never disagree with the
+/// model about which options exist.
+///
+/// # Safety
+/// Both strings must be NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_set_items(
+    surface: *mut CloverSurface,
+    name_utf8: *const c_char,
+    items_csv: *const c_char,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if name_utf8.is_null() || items_csv.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let (Ok(name), Ok(csv)) = (
+        CStr::from_ptr(name_utf8).to_str(),
+        CStr::from_ptr(items_csv).to_str(),
+    ) else {
+        return CloverResult::ParseError;
+    };
+    let items: Vec<String> = csv.split(',').map(|item| item.trim().to_string()).collect();
+    if surface.surface.set_items(name, items) {
+        CloverResult::Ok
+    } else {
+        CloverResult::UnknownHandle
+    }
+}
+
+/// Opens a menu at a logical anchor, with rows reported as `<prefix>:<index>`.
+///
+/// Same popup as a combo box, so clamping, scrolling, hover and keyboard behave
+/// identically. Hosts use it for context menus, submenus and palette flyouts.
+///
+/// # Safety
+/// Both strings must be NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_open_menu(
+    surface: *mut CloverSurface,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    items_csv: *const c_char,
+    prefix_utf8: *const c_char,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if items_csv.is_null() || prefix_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let (Ok(csv), Ok(prefix)) = (
+        CStr::from_ptr(items_csv).to_str(),
+        CStr::from_ptr(prefix_utf8).to_str(),
+    ) else {
+        return CloverResult::ParseError;
+    };
+    let items: Vec<String> = csv.split(',').map(|item| item.trim().to_string()).collect();
+    let anchor = clover_core::Rect::new(x, y, width.max(1.0), height.max(1.0));
+    if surface.surface.open_menu(anchor, items, prefix) {
+        CloverResult::Ok
+    } else {
+        CloverResult::ParseError
+    }
+}
+
+/// Closes any open popup or menu.
+///
+/// # Safety
+/// `surface` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_close_menu(surface: *mut CloverSurface) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    surface.surface.close_popup();
+    CloverResult::Ok
+}
+
 /// Registers an image from a PNG file and returns its handle, or 0 on failure.
 ///
 /// # Safety

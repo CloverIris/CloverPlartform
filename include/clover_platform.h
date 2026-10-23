@@ -197,6 +197,19 @@ clover_result clover_surface_set_value(clover_surface *surface, const char *name
 clover_result clover_surface_set_checked(clover_surface *surface, const char *name_utf8, bool checked);
 clover_result clover_surface_set_selected(clover_surface *surface, const char *name_utf8,
                                           uint32_t index);
+clover_result clover_surface_set_items(clover_surface *surface, const char *name_utf8,
+                                       const char *items_csv);
+
+/*
+ * Menus
+ * -----
+ * A context menu is the same popup as a combo box: clamped, scrollable, with
+ * hover and arrow-key navigation. Rows are reported as `<prefix>:<index>`.
+ */
+clover_result clover_surface_open_menu(clover_surface *surface, float x, float y, float width,
+                                       float height, const char *items_csv,
+                                       const char *prefix_utf8);
+clover_result clover_surface_close_menu(clover_surface *surface);
 clover_result clover_surface_set_enabled(clover_surface *surface, const char *name_utf8, bool enabled);
 
 /* Replaces a named node's children from a fragment, for dynamic lists. */

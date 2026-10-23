@@ -162,6 +162,31 @@ Today `hdr_raster` is false, so an HDR request lands on `Bgra8Sdr` with
 silent one — the whole point of recording the reason is that a host can surface
 it and a future float raster path only has to flip one flag.
 
+## 5a0. Popups
+
+A popup is not "a list drawn near a box". It is a placement problem, a scroll
+problem and a keyboard problem, and every flyout in a real application needs all
+three:
+
+- **Placement** is decided against the viewport, not the anchor. A list opened
+  near the bottom edge flips above it; one opened near the right edge is clamped
+  left. An anchor-relative offset cannot express that.
+- **Height** is capped at twelve rows and the list scrolls, so a menu with forty
+  entries is usable rather than taller than the window.
+- **Highlight** follows the pointer and the arrow keys; Enter chooses, Escape
+  dismisses, and the highlighted row is what Enter selects.
+- **Content** comes from the host (`set_items`), never from markup that can
+  disagree with the model.
+
+Combos and context menus share the same builder; the only difference is whether
+the chosen row mutates a widget (`@combo:`) or is reported to the host
+(`@menu:` → `<prefix>:<index>`).
+
+The layer blend dropdown is the test case that exposed all of this: its markup
+listed five modes while `BlendMode` has eighteen in a different order, so choosing
+"Darken" applied `Overlay`. The list now comes from the model, and the selected
+index *is* the enum value.
+
 ## 5a0. The MVVM seam
 
 A host that rebuilds the tree whenever a number changes cannot hold a caret, a

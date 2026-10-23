@@ -170,6 +170,10 @@ pub struct Surface {
     combo: Option<(NodeId, String)>,
     /// Active splitter drag: (splitter node, size at press, pointer at press).
     splitter: Option<(NodeId, f32, f32)>,
+    /// Rows of the open popup, in display order.
+    menu_rows: Vec<(NodeId, usize)>,
+    /// Highlighted row index inside the open popup.
+    menu_highlight: usize,
 }
 
 impl Surface {
@@ -189,6 +193,8 @@ impl Surface {
             widget_press: None,
             combo: None,
             splitter: None,
+            menu_rows: Vec::new(),
+            menu_highlight: 0,
         };
         surface.resize(width, height, scale);
         Some(surface)
@@ -655,6 +661,30 @@ impl Surface {
         false
     }
 
+    /// Replaces a combo box's items, e.g. when the host supplies the real list.
+    ///
+    /// Rebuilds the open popup so a list that changes while shown cannot go stale.
+    pub fn set_items(&mut self, name: &str, items: Vec<String>) -> bool {
+        let Some(id) = self.tree.named(name).map(|node| node.id) else { return false };
+        let Some(node) = self.tree.node_mut(id) else { return false };
+        if let Some(clover_ui::node::Widget::ComboBox { items: current, selected, .. }) =
+            &mut node.widget
+        {
+            if *current == items {
+                return false;
+            }
+            *current = items;
+            *selected = (*selected).min(current.len().saturating_sub(1));
+            let bounds = node.bounds;
+            self.tree.damage().add(bounds);
+            if self.combo.as_ref().map(|(open, _)| *open == id).unwrap_or(false) {
+                self.refresh_popup();
+            }
+            return true;
+        }
+        false
+    }
+
     /// Pushes a selection into a combo box.
     pub fn set_selected(&mut self, name: &str, index: usize) -> bool {
         let Some(id) = self.tree.named(name).map(|node| node.id) else { return false };
@@ -667,6 +697,11 @@ impl Surface {
             *selected = next;
             let bounds = node.bounds;
             self.tree.damage().add(bounds);
+            let open = self.combo.as_ref().map(|(open, _)| *open == id).unwrap_or(false);
+            if open {
+                self.menu_highlight = next;
+                self.refresh_popup();
+            }
             return true;
         }
         false
@@ -873,99 +908,6 @@ impl Surface {
         chain.iter().any(|id| *id == overlay_id)
     }
 
-    /// Closes the combo popup and marks the box closed.
-    fn close_combo(&mut self) {
-        if let Some((id, _)) = self.combo.take() {
-            if let Some(node) = self.tree.node_mut(id) {
-                if let Some(clover_ui::node::Widget::ComboBox { open, .. }) = &mut node.widget {
-                    *open = false;
-                }
-            }
-        }
-        self.tree.set_overlay(None);
-    }
-
-    /// Handles a framework-internal action such as `@combo:blend:2`.
-    fn handle_internal(&mut self, action: &str) {
-        let rest = action.trim_start_matches('@');
-        let mut parts = rest.split(':');
-        let kind = parts.next().unwrap_or_default();
-        if kind != "combo" {
-            return;
-        }
-        let name = parts.next().unwrap_or_default();
-        let index: usize = parts.next().and_then(|value| value.parse().ok()).unwrap_or(0);
-
-        let mut target = None;
-        if let Some(node) = self.tree.named(name) {
-            target = Some(node.id);
-        }
-        let Some(id) = target else { return };
-        let items = match self.tree.node(id).and_then(|node| node.widget.as_ref()) {
-            Some(clover_ui::node::Widget::ComboBox { items, .. }) => items.clone(),
-            _ => return,
-        };
-        if let Some(node) = self.tree.node_mut(id) {
-            if let Some(clover_ui::node::Widget::ComboBox { selected, open, .. }) = &mut node.widget {
-                *selected = index.min(items.len().saturating_sub(1));
-                *open = false;
-            }
-            let bounds = node.bounds;
-            self.tree.damage().add(bounds);
-        }
-        self.combo = None;
-        self.tree.set_overlay(None);
-        self.pending_actions.push(format!("change:{name}:{index}"));
-    }
-
-    /// Builds and shows the popup list for a combo box.
-    fn open_combo(&mut self, id: NodeId, name: &str) {
-        let Some(node) = self.tree.node(id) else { return };
-        let bounds = node.bounds;
-        let items = match node.widget.as_ref() {
-            Some(clover_ui::node::Widget::ComboBox { items, selected, .. }) => {
-                (items.clone(), *selected)
-            }
-            _ => return,
-        };
-        let (items, selected) = items;
-
-        let mut list = clover_ui::node::column()
-            .position(bounds.x, bounds.y + bounds.h + 2.0)
-            .width(clover_ui::style::Length::Px(bounds.w))
-            .padding(clover_core::Edges::all(2.0))
-            .background(clover_core::Color::rgb(0x2B, 0x31, 0x38))
-            .radius(4.0);
-        for (index, item) in items.iter().enumerate() {
-            let mut row = clover_ui::node::panel()
-                .width(clover_ui::style::Length::Fill)
-                .height(clover_ui::style::Length::Px(20.0))
-                .padding(clover_core::Edges::symmetric(8.0, 0.0))
-                .background(if index == selected {
-                    clover_core::Color::rgb(0x3B, 0x6F, 0xD4)
-                } else {
-                    clover_core::Color::TRANSPARENT
-                });
-            row.action = Some(format!("@combo:{name}:{index}"));
-            row.children.push(clover_ui::node::text(item.clone()));
-            list.children.push(row);
-        }
-
-        let mut wrapper = clover_ui::node::panel()
-            .width(clover_ui::style::Length::Fill)
-            .height(clover_ui::style::Length::Fill)
-            .hit_test(false);
-        wrapper.children.push(list);
-        self.tree.set_overlay(Some(wrapper));
-        self.combo = Some((id, name.to_string()));
-
-        if let Some(node) = self.tree.node_mut(id) {
-            if let Some(clover_ui::node::Widget::ComboBox { open, .. }) = &mut node.widget {
-                *open = true;
-            }
-        }
-    }
-
     /// Size of the pane a splitter drives, in its drag axis.
     fn pane_size(&self, splitter: NodeId) -> f32 {
         let Some(node) = self.tree.node(splitter) else { return 0.0 };
@@ -1003,6 +945,215 @@ impl Surface {
         }
         self.tree.invalidate_layout();
         self.tree.damage().mark_full();
+    }
+
+    /// Rebuilds the open popup with the current highlight.
+    fn refresh_popup(&mut self) {
+        let Some((id, name)) = self.combo.clone() else { return };
+        self.open_combo_again(id, &name);
+    }
+
+    /// Re-opens a combo's popup without resetting the highlight.
+    fn open_combo_again(&mut self, id: NodeId, name: &str) {
+        let Some(node) = self.tree.node(id) else { return };
+        let anchor = node.bounds;
+        let items = match node.widget.as_ref() {
+            Some(clover_ui::node::Widget::ComboBox { items, .. }) => items.clone(),
+            _ => return,
+        };
+        let selected = self.menu_highlight;
+        self.build_popup(anchor, &items, selected, name);
+    }
+
+    /// Closes the combo popup and marks the box closed.
+    fn close_combo(&mut self) {
+        if let Some((id, _)) = self.combo.take() {
+            if let Some(node) = self.tree.node_mut(id) {
+                if let Some(clover_ui::node::Widget::ComboBox { open, .. }) = &mut node.widget {
+                    *open = false;
+                }
+            }
+        }
+        self.tree.set_overlay(None);
+    }
+
+    /// Handles a framework-internal action such as `@combo:blend:2`.
+    fn handle_internal(&mut self, action: &str) {
+        let rest = action.trim_start_matches('@');
+        let mut parts = rest.split(':');
+        let kind = parts.next().unwrap_or_default();
+        if kind != "combo" && kind != "menu" {
+            return;
+        }
+        let name = parts.next().unwrap_or_default();
+        let index: usize = parts.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+
+        if kind == "menu" {
+            // A context menu has no widget behind it: close and tell the host.
+            self.combo = None;
+            self.menu_rows.clear();
+            self.menu_highlight = 0;
+            self.tree.set_overlay(None);
+            self.pending_actions.push(format!("{name}:{index}"));
+            return;
+        }
+
+        let mut target = None;
+        if let Some(node) = self.tree.named(name) {
+            target = Some(node.id);
+        }
+        let Some(id) = target else { return };
+        let items = match self.tree.node(id).and_then(|node| node.widget.as_ref()) {
+            Some(clover_ui::node::Widget::ComboBox { items, .. }) => items.clone(),
+            _ => return,
+        };
+        if let Some(node) = self.tree.node_mut(id) {
+            if let Some(clover_ui::node::Widget::ComboBox { selected, open, .. }) = &mut node.widget {
+                *selected = index.min(items.len().saturating_sub(1));
+                *open = false;
+            }
+            let bounds = node.bounds;
+            self.tree.damage().add(bounds);
+        }
+        self.combo = None;
+        self.menu_rows.clear();
+        self.menu_highlight = 0;
+        self.tree.set_overlay(None);
+        self.pending_actions.push(format!("change:{name}:{index}"));
+    }
+
+    /// Builds and shows the popup list for a combo box.
+    ///
+    /// Placement is decided against the viewport, not against the anchor: a list
+    /// opened near the bottom flips up instead of running off screen, and a list
+    /// taller than the window scrolls.
+    fn open_combo(&mut self, id: NodeId, name: &str) {
+        let Some(node) = self.tree.node(id) else { return };
+        let anchor = node.bounds;
+        let (items, selected) = match node.widget.as_ref() {
+            Some(clover_ui::node::Widget::ComboBox { items, selected, .. }) => {
+                (items.clone(), *selected)
+            }
+            _ => return,
+        };
+        self.menu_highlight = selected.min(items.len().saturating_sub(1));
+        self.build_popup(anchor, &items, selected, name);
+        self.combo = Some((id, name.to_string()));
+        if let Some(node) = self.tree.node_mut(id) {
+            if let Some(clover_ui::node::Widget::ComboBox { open, .. }) = &mut node.widget {
+                *open = true;
+            }
+        }
+    }
+
+    /// Opens a menu at `anchor` whose rows are reported as `<prefix>:<index>`.
+    ///
+    /// This is the same popup as a combo box, so clamping, scrolling, hover and
+    /// keyboard behaviour are identical. Context menus, submenus and palette
+    /// flyouts all go through here.
+    pub fn open_menu(&mut self, anchor: Rect, items: Vec<String>, prefix: &str) -> bool {
+        if items.is_empty() {
+            return false;
+        }
+        self.combo = None;
+        self.menu_highlight = usize::MAX;
+        self.build_popup_with(anchor, &items, usize::MAX, prefix, "@menu");
+        true
+    }
+
+    /// Closes any open popup.
+    pub fn close_popup(&mut self) -> bool {
+        let had = self.tree.overlay().is_some();
+        self.combo = None;
+        self.menu_rows.clear();
+        self.menu_highlight = 0;
+        self.tree.set_overlay(None);
+        had
+    }
+
+    /// Lays out a popup list under (or above) `anchor`.
+    ///
+    /// Shared by combo boxes and, later, context menus: both need the same
+    /// clamping, hover, scrolling and keyboard behaviour.
+    fn build_popup(&mut self, anchor: Rect, items: &[String], selected: usize, name: &str) {
+        self.build_popup_with(anchor, items, selected, name, "@combo");
+    }
+
+    /// Builds a popup whose rows emit `<@combo|@menu>:<name>:<index>`.
+    fn build_popup_with(
+        &mut self,
+        anchor: Rect,
+        items: &[String],
+        selected: usize,
+        name: &str,
+        kind: &str,
+    ) {
+        const ROW_HEIGHT: f32 = 22.0;
+        const PADDING: f32 = 3.0;
+        const MAX_ROWS_VISIBLE: f32 = 12.0;
+
+        let viewport = self.tree.viewport();
+        let rows = items.len() as f32;
+        let wanted = rows * ROW_HEIGHT + PADDING * 2.0;
+        let max_height = (MAX_ROWS_VISIBLE * ROW_HEIGHT + PADDING * 2.0).min(viewport.h - 16.0);
+        let height = wanted.min(max_height.max(ROW_HEIGHT + PADDING * 2.0));
+
+        let below = anchor.y + anchor.h + 2.0;
+        let fits_below = below + height <= viewport.h - 4.0;
+        let y = if fits_below {
+            below
+        } else {
+            // Flip above; if neither side fits, keep the larger share visible.
+            (anchor.y - height - 2.0).max(4.0)
+        };
+        let width = anchor.w.max(120.0).min(viewport.w - 8.0);
+        let x = anchor.x.min((viewport.w - width - 4.0).max(4.0));
+
+        let mut list = clover_ui::node::column()
+            .position(x, y)
+            .width(clover_ui::style::Length::Px(width))
+            .height(clover_ui::style::Length::Px(height))
+            .padding(clover_core::Edges::all(PADDING))
+            .background(clover_core::Color::rgb(0x2B, 0x31, 0x38))
+            .radius(4.0)
+            .scrollable();
+
+        let mut row_ids = Vec::with_capacity(items.len());
+        for (index, item) in items.iter().enumerate() {
+            let highlighted = selected != usize::MAX
+                && index == self.menu_highlight.min(items.len().saturating_sub(1));
+            let mut row = clover_ui::node::panel()
+                .width(clover_ui::style::Length::Fill)
+                .height(clover_ui::style::Length::Px(ROW_HEIGHT))
+                .padding(clover_core::Edges::symmetric(8.0, 0.0))
+                .background(if highlighted {
+                    clover_core::Color::rgb(0x3B, 0x6F, 0xD4)
+                } else {
+                    clover_core::Color::TRANSPARENT
+                });
+            row.style.cursor = clover_ui::style::Cursor::Pointer;
+            row.style.ellipsis = true;
+            row.action = Some(format!("{kind}:{name}:{index}"));
+            let mut label = clover_ui::node::text(item.clone());
+            label.style.ellipsis = true;
+            label.style.text_color = if highlighted {
+                clover_core::Color::WHITE
+            } else {
+                clover_core::Color::rgb(0xC8, 0xC8, 0xC8)
+            };
+            row.children.push(label);
+            row_ids.push((row.id, index));
+            list.children.push(row);
+        }
+        let _ = selected;
+
+        let mut wrapper = clover_ui::node::panel()
+            .width(clover_ui::style::Length::Fill)
+            .height(clover_ui::style::Length::Fill)
+            .hit_test(false);
+        wrapper.children.push(list);
+        self.menu_rows = row_ids;
+        self.tree.set_overlay(Some(wrapper));
     }
 
     /// Whether a drag gesture is in progress.
@@ -1126,6 +1277,19 @@ impl Surface {
                         self.tree.set_pressed(None);
                     }
                     clover_ui::PointerAction::Move => {
+                        if !self.menu_rows.is_empty() {
+                            let chain = self.tree.hit_chain(p.position);
+                            if let Some((_, row)) = self
+                                .menu_rows
+                                .iter()
+                                .find(|(node, _)| chain.iter().any(|hit| hit == node))
+                            {
+                                if *row != self.menu_highlight {
+                                    self.menu_highlight = *row;
+                                    self.refresh_popup();
+                                }
+                            }
+                        }
                         if let Some((id, start, origin)) = self.splitter {
                             self.drag_splitter(id, start, origin, p.position);
                         }
@@ -1175,6 +1339,28 @@ impl Surface {
                 }
             }
             UiEvent::Key(k) => {
+                if k.action == clover_ui::KeyAction::Down && !self.menu_rows.is_empty() {
+                    // Arrow keys and Enter drive the open popup before anything else.
+                    if k.key == 0x26 || k.key == 0x28 {
+                        let count = self.menu_rows.len();
+                        if k.key == 0x26 {
+                            self.menu_highlight = self.menu_highlight.saturating_sub(1);
+                        } else {
+                            self.menu_highlight = (self.menu_highlight + 1).min(count - 1);
+                        }
+                        self.refresh_popup();
+                        return Vec::new();
+                    }
+                    if k.key == 0x0D {
+                        if let Some((_, index)) = self.menu_rows.get(self.menu_highlight).copied() {
+                            if let Some((_, name)) = self.combo.clone() {
+                                let action = format!("@combo:{name}:{index}");
+                                self.handle_internal(&action);
+                            }
+                        }
+                        return Vec::new();
+                    }
+                }
                 if k.action == clover_ui::KeyAction::Down && k.key == 0x1B {
                     // Escape dismisses a popup before anything else sees the key.
                     if self.combo.is_some() || self.tree.overlay().is_some() {
@@ -1604,6 +1790,134 @@ mod tests {
         assert_eq!(selected, 1, "clicking row 1 selects index 1");
         assert!(surface.tree().overlay().is_none(), "choosing closes the popup");
         assert_eq!(surface.take_action().as_deref(), Some("change:blend:1"));
+    }
+
+    #[test]
+    fn popup_flips_above_when_there_is_no_room_below() {
+        let markup = format!(
+            r##"<Panel><ComboBox x:Name="blend" Position="10,150" Width="120" Height="20"
+                     Items="{}"/></Panel>"##,
+            "A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P"
+        );
+        let root = clover_ui::xaml::parse(&markup, &clover_ui::xaml::NoImages).unwrap();
+        let mut surface = Surface::new(root, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        surface.dispatch(drag_event(PointerAction::Down, 20.0, 155.0));
+        surface.dispatch(drag_event(PointerAction::Up, 20.0, 155.0));
+
+        let overlay = surface.tree().overlay().expect("popup");
+        let list = &overlay.children[0];
+        assert!(
+            list.bounds.bottom() <= 200.0,
+            "the list must stay inside the viewport, got {:?}",
+            list.bounds
+        );
+        assert!(
+            list.bounds.y < 150.0,
+            "with no room below it flips above the anchor, got {:?}",
+            list.bounds
+        );
+    }
+
+    #[test]
+    fn popup_is_clamped_to_the_viewport_width() {
+        let root = clover_ui::xaml::parse(
+            r##"<Panel><ComboBox x:Name="blend" Position="150,10" Width="120" Height="20" Items="A,B"/></Panel>"##,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        surface.dispatch(drag_event(PointerAction::Down, 160.0, 15.0));
+        surface.dispatch(drag_event(PointerAction::Up, 160.0, 15.0));
+
+        let overlay = surface.tree().overlay().expect("popup");
+        let list = &overlay.children[0];
+        assert!(list.bounds.right() <= 200.0, "popup must not run off the right edge");
+    }
+
+    #[test]
+    fn arrow_keys_move_the_highlight_and_enter_selects() {
+        let root = clover_ui::xaml::parse(
+            r#"<Panel><ComboBox x:Name="blend" Width="120" Height="20" Items="A,B,C"/></Panel>"#,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        surface.dispatch(drag_event(PointerAction::Down, 10.0, 10.0));
+        surface.dispatch(drag_event(PointerAction::Up, 10.0, 10.0));
+
+        let key = |code: u32| {
+            UiEvent::Key(clover_ui::KeyEvent {
+                key: code,
+                action: clover_ui::KeyAction::Down,
+                modifiers: clover_ui::Modifiers::default(),
+                repeat: false,
+            })
+        };
+        surface.dispatch(key(0x28));
+        surface.dispatch(key(0x28));
+        surface.dispatch(key(0x0D));
+
+        let selected = match surface.tree().named("blend").and_then(|node| node.widget.clone()) {
+            Some(clover_ui::node::Widget::ComboBox { selected, .. }) => selected,
+            other => panic!("expected a combo, got {other:?}"),
+        };
+        assert_eq!(selected, 2, "two downs then enter selects the third item");
+        assert_eq!(surface.take_action().as_deref(), Some("change:blend:2"));
+        assert!(surface.tree().overlay().is_none(), "choosing closes the popup");
+    }
+
+    #[test]
+    fn a_context_menu_reports_the_chosen_index() {
+        let root = clover_ui::xaml::parse(
+            r##"<Panel Background="#101010" Width="Fill" Height="Fill"/>"##,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        assert!(surface.open_menu(
+            clover_core::Rect::new(40.0, 40.0, 120.0, 20.0),
+            vec!["Duplicate".into(), "Delete".into()],
+            "layer-menu"
+        ));
+        surface.invalidate_all();
+        let _ = surface.frame();
+        assert!(surface.tree().overlay().is_some(), "the menu is an overlay");
+
+        // Second row sits 22px under the first, which starts 2px below the anchor.
+        surface.dispatch(drag_event(PointerAction::Down, 60.0, 40.0 + 22.0 + 4.0 + 22.0 + 10.0));
+        surface.dispatch(drag_event(PointerAction::Up, 60.0, 40.0 + 22.0 + 4.0 + 22.0 + 10.0));
+        assert!(surface.tree().overlay().is_none(), "choosing closes the menu");
+        assert_eq!(surface.take_action().as_deref(), Some("layer-menu:1"));
+    }
+
+    #[test]
+    fn set_items_rebuilds_the_open_popup() {
+        let root = clover_ui::xaml::parse(
+            r#"<Panel><ComboBox x:Name="blend" Width="120" Height="20" Items="A,B"/></Panel>"#,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        surface.dispatch(drag_event(PointerAction::Down, 10.0, 10.0));
+        surface.dispatch(drag_event(PointerAction::Up, 10.0, 10.0));
+
+        assert!(surface.set_items("blend", vec!["X".into(), "Y".into(), "Z".into(), "W".into()]));
+        surface.invalidate_all();
+        let _ = surface.frame();
+        let overlay = surface.tree().overlay().expect("popup");
+        let rows = overlay.children[0].children.len();
+        assert_eq!(rows, 4, "the open list follows the new items");
     }
 
     #[test]

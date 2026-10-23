@@ -23,7 +23,7 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 
 ![A .cui document rendered by the framework](docs/cui.png)
 
-> Status: **0.17 — MVVM-ready**. The pipeline works end to end (tree →
+> Status: **0.18 — popups that behave**. The pipeline works end to end (tree →
 > layout → display list → tile-parallel raster → frame), both authoring
 > front-ends produce the same tree, layout supports flex-style `Fill`, text
 > wraps, and keyboard focus is routed. Styles, templates, bindings and animation
@@ -72,6 +72,11 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 * **Control templates.** `<Template x:Key="chip">` in a stylesheet replaces a
   control's visuals while keeping its properties; `{Binding Content}` and
   `{Binding Tag}` bind the control into the template.
+* **Menus that behave.** Combo popups and context menus share one implementation:
+  placement is clamped to the viewport (and flips above when there is no room
+  below), tall lists scroll, rows highlight on hover, arrow keys move the
+  highlight and Enter chooses. `clover_surface_open_menu` opens the same popup for
+  right-click menus.
 * **MVVM plumbing.** `set_value` / `set_checked` / `set_selected` /
   `set_enabled` / `set_label` push model state into the tree without rebuilding
   it, `set_children_xaml` swaps a list's rows, and `reload_cui` rebuilds the page
