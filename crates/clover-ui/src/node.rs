@@ -1022,6 +1022,82 @@ impl UiTree {
         self.overlay.as_deref_mut().and_then(|overlay| overlay.find_mut(id))
     }
 
+    /// Pushes a value into a slider or scrollbar.
+    pub fn set_value(&mut self, name: &str, value: f32) -> bool {
+        let Some(id) = self.named(name).map(|node| node.id) else { return false };
+        let Some(node) = self.node_mut(id) else { return false };
+        let mut relayout = false;
+        let changed = match &mut node.widget {
+            Some(Widget::Slider { value: current, min, max, .. }) => {
+                let next = value.clamp(*min, *max);
+                let changed = (*current - next).abs() > 0.001;
+                *current = next;
+                changed
+            }
+            Some(Widget::ScrollBar { offset, extent, viewport, .. }) => {
+                let next = value.clamp(0.0, (*extent - *viewport).max(0.0));
+                let changed = (*offset - next).abs() > 0.001;
+                *offset = next;
+                relayout = changed;
+                changed
+            }
+            _ => false,
+        };
+        if changed {
+            let bounds = node.bounds;
+            self.damage.add(bounds);
+            if relayout {
+                self.layout_dirty = true;
+            }
+        }
+        changed
+    }
+
+    /// Pushes a checked state into a checkbox.
+    pub fn set_checked(&mut self, name: &str, checked: bool) -> bool {
+        let Some(id) = self.named(name).map(|node| node.id) else { return false };
+        let Some(node) = self.node_mut(id) else { return false };
+        if let Some(Widget::CheckBox { checked: current }) = &mut node.widget {
+            if *current == checked {
+                return false;
+            }
+            *current = checked;
+            let bounds = node.bounds;
+            self.damage.add(bounds);
+            return true;
+        }
+        false
+    }
+
+    /// Pushes a selection into a combo box.
+    pub fn set_selected(&mut self, name: &str, index: usize) -> bool {
+        let Some(id) = self.named(name).map(|node| node.id) else { return false };
+        let Some(node) = self.node_mut(id) else { return false };
+        if let Some(Widget::ComboBox { selected, items, .. }) = &mut node.widget {
+            let next = index.min(items.len().saturating_sub(1));
+            if *selected == next {
+                return false;
+            }
+            *selected = next;
+            let bounds = node.bounds;
+            self.damage.add(bounds);
+            return true;
+        }
+        false
+    }
+
+    /// Enables or disables a node, dimming it when disabled.
+    pub fn set_enabled(&mut self, name: &str, enabled: bool) -> bool {
+        let Some(node) = self.named_mut(name) else { return false };
+        if node.style.enabled == enabled {
+            return false;
+        }
+        node.style.enabled = enabled;
+        let bounds = node.bounds;
+        self.damage.add(bounds);
+        true
+    }
+
     /// Sets a text node's content by name.
     pub fn set_label(&mut self, name: &str, value: &str) -> bool {
         let Some(id) = self.named(name).map(|node| node.id) else { return false };

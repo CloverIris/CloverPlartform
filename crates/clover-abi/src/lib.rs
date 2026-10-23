@@ -1188,6 +1188,37 @@ pub unsafe extern "C" fn clover_surface_set_content(
     }
 }
 
+/// Opens a submenu to the right of the menu that is currently open.
+///
+/// A row whose label ends with `>` reports its index but keeps the menu open, so
+/// the host can cascade with this call.
+///
+/// # Safety
+/// Both strings must be NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_open_submenu(
+    surface: *mut CloverSurface,
+    items_csv: *const c_char,
+    prefix_utf8: *const c_char,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if items_csv.is_null() || prefix_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let (Ok(csv), Ok(prefix)) = (
+        CStr::from_ptr(items_csv).to_str(),
+        CStr::from_ptr(prefix_utf8).to_str(),
+    ) else {
+        return CloverResult::ParseError;
+    };
+    let items: Vec<String> = csv.split(',').map(|item| item.trim().to_string()).collect();
+    if surface.surface.open_submenu(items, prefix) {
+        CloverResult::Ok
+    } else {
+        CloverResult::ParseError
+    }
+}
+
 /// Registers an image from a PNG file and returns its handle, or 0 on failure.
 ///
 /// # Safety

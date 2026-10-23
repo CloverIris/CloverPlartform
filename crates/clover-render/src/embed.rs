@@ -28,6 +28,9 @@ pub struct EmbeddedDocument {
     pub width: u32,
     pub height: u32,
     pub dirty: bool,
+    /// Node pressed inside the child, and the action it will fire on release.
+    pressed: Option<clover_ui::NodeId>,
+    press_action: Option<String>,
 }
 
 impl EmbeddedDocument {
@@ -90,6 +93,8 @@ impl EmbeddedDocument {
             width: width.max(1),
             height: height.max(1),
             dirty: true,
+            pressed: None,
+            press_action: None,
         })
     }
 
@@ -149,6 +154,70 @@ impl EmbeddedDocument {
         let _ = self.tree.take_damage(bounds);
         self.dirty = false;
         true
+    }
+
+    /// Applies a pointer event in the child's own coordinates.
+    ///
+    /// An embedded document is a document, not a picture: hovering, pressing and
+    /// scrolling inside it must work. The child keeps its own hover/press state so
+    /// two panels cannot interfere with each other.
+    pub fn dispatch_pointer(&mut self, action: clover_ui::PointerAction, position: clover_core::Point) -> Vec<String> {
+        use clover_ui::PointerAction;
+        let mut out = Vec::new();
+        self.tree.update_hover(Some(position));
+        let chain = self.tree.hit_chain(position);
+        match action {
+            PointerAction::Down => {
+                let target = chain.iter().copied().find_map(|id| {
+                    self.tree
+                        .root()
+                        .find_action_ancestor(id)
+                        .map(|(node, action)| (node, action.to_string()))
+                });
+                self.pressed = target.as_ref().map(|(node, _)| *node);
+                self.press_action = target.map(|(_, action)| action);
+            }
+            PointerAction::Up => {
+                let released = chain.iter().copied().find_map(|id| {
+                    self.tree.root().find_action_ancestor(id).map(|(node, _)| node)
+                });
+                if let (Some(pressed), Some(action)) = (self.pressed, self.press_action.take()) {
+                    if released == Some(pressed) {
+                        out.push(action);
+                    }
+                }
+                self.pressed = None;
+            }
+            PointerAction::Move | PointerAction::Cancel => {}
+        }
+        self.dirty = true;
+        out
+    }
+
+    /// Scrolls whatever is under the pointer inside the child.
+    pub fn dispatch_wheel(&mut self, delta: f32, position: clover_core::Point) -> bool {
+        let chain = self.tree.hit_chain(position);
+        let Some(target) = chain
+            .iter()
+            .copied()
+            .find(|id| self.tree.node(*id).map(|n| n.scroll.enabled).unwrap_or(false))
+        else {
+            return false;
+        };
+        let mut moved = false;
+        if let Some(node) = self.tree.node_mut(target) {
+            let max = node.scroll.max_offset(node.bounds.h);
+            let next = (node.scroll.offset - delta * 40.0).clamp(0.0, max);
+            if (next - node.scroll.offset).abs() > 0.01 {
+                node.scroll.offset = next;
+                moved = true;
+            }
+        }
+        if moved {
+            self.tree.invalidate_layout();
+            self.dirty = true;
+        }
+        moved
     }
 
     /// Paints a visible error state into the texture so the host sees which child

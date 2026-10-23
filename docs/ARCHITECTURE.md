@@ -188,9 +188,18 @@ layout — that is how a panel container becomes a place rather than a document.
 structure is isolated enough that parallelising is a scheduling change rather than
 a design change, but the claim "each child on its own thread" is not true today.
 
-**Binding across levels** is also unsolved: `set_value` addresses nodes in the
-parent's tree, so a control that moves into a child document stops receiving model
-updates. The fix is a per-slot data context, not a recursive name lookup.
+**Binding across levels** is solved by addressing, not by recursion: a name may be
+written `slot:node`, which routes the update into that slot's document. Panels
+therefore own their controls without colliding with the page, and a rename in one
+panel cannot shadow another.
+
+**Input crosses levels the same way**: a pointer event that lands in a slot's box
+is delivered to that document with translated coordinates, along with its own
+hover and press state, and the actions it produces join the page's queue.
+
+**Menus cascade.** A menu row whose label ends in `>` reports its index and keeps
+the menu open, so the host can call `open_submenu` and get a child list beside the
+parent. Choosing from the child closes the whole cascade.
 
 ## 5a0. Popups
 

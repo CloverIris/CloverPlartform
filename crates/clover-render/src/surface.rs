@@ -299,6 +299,51 @@ impl Surface {
         self.generation += 1;
     }
 
+    /// Range and source of the embedded document under `point`, if any.
+    fn content_at(&self, point: clover_core::Point) -> Option<(String, Rect)> {
+        fn walk(node: &Node, point: clover_core::Point, out: &mut Option<(String, Rect)>) {
+            if out.is_some() || !node.visible {
+                return;
+            }
+            if let View::Content { source } = &node.view {
+                if node.bounds.contains(point) {
+                    *out = Some((source.clone(), node.bounds));
+                    return;
+                }
+            }
+            for child in &node.children {
+                walk(child, point, out);
+            }
+        }
+        let mut found = None;
+        walk(self.tree.root(), point, &mut found);
+        found
+    }
+
+    /// The embedded document for a slot node named `slot`.
+    fn embed_for_slot(&mut self, slot: &str) -> Option<&mut crate::embed::EmbeddedDocument> {
+        let node = self.tree.named(slot)?;
+        let source = match &node.view {
+            View::Content { source } => source.clone(),
+            _ => return None,
+        };
+        self.embeds.get_mut(&source)
+    }
+
+    /// Marks the box of a slot for repaint after its document changed.
+    fn damage_slot(&mut self, slot: &str) {
+        if let Some(node) = self.tree.named(slot) {
+            let bounds = node.bounds;
+            self.tree.damage().add(bounds);
+        }
+    }
+
+    /// Splits `slot:node` into its parts; a plain name addresses the page.
+    fn split_slot(name: &str) -> Option<(String, String)> {
+        name.split_once(':')
+            .map(|(slot, node)| (slot.to_string(), node.to_string()))
+    }
+
     /// Loads, lays out and renders every embedded document.
     ///
     /// Failures are contained: a child that cannot load is recorded, marked on
@@ -704,45 +749,48 @@ impl Surface {
 
     /// Pushes a value into a slider or scrollbar (the MVVM update direction).
     pub fn set_value(&mut self, name: &str, value: f32) -> bool {
-        let Some(id) = self.tree.named(name).map(|node| node.id) else { return false };
-        let Some(node) = self.tree.node_mut(id) else { return false };
-        let changed = match &mut node.widget {
-            Some(clover_ui::node::Widget::Slider { value: current, min, max, .. }) => {
-                let next = value.clamp(*min, *max);
-                let changed = (*current - next).abs() > 0.001;
-                *current = next;
-                changed
+        // `slot:node` addresses a control inside an embedded document, so panels
+        // can own their controls without colliding with the page.
+        if let Some((slot, node)) = Self::split_slot(name) {
+            let changed = match self.embed_for_slot(&slot) {
+                Some(embed) => {
+                    let result = embed.tree.set_value(&node, value);
+                    if result {
+                        embed.dirty = true;
+                    }
+                    result
+                }
+                None => false,
+            };
+            if changed {
+                self.damage_slot(&slot);
             }
-            Some(clover_ui::node::Widget::ScrollBar { offset, extent, viewport, .. }) => {
-                let next = value.clamp(0.0, (*extent - *viewport).max(0.0));
-                let changed = (*offset - next).abs() > 0.001;
-                *offset = next;
-                changed
-            }
-            _ => false,
-        };
-        if changed {
-            let bounds = node.bounds;
-            self.tree.damage().add(bounds);
-            self.tree.invalidate_layout();
+            return changed;
         }
-        changed
+        self.tree.set_value(name, value)
     }
 
     /// Pushes a checked state into a checkbox.
     pub fn set_checked(&mut self, name: &str, checked: bool) -> bool {
-        let Some(id) = self.tree.named(name).map(|node| node.id) else { return false };
-        let Some(node) = self.tree.node_mut(id) else { return false };
-        if let Some(clover_ui::node::Widget::CheckBox { checked: current }) = &mut node.widget {
-            if *current == checked {
-                return false;
+        // `slot:node` addresses a control inside an embedded document, so panels
+        // can own their controls without colliding with the page.
+        if let Some((slot, node)) = Self::split_slot(name) {
+            let changed = match self.embed_for_slot(&slot) {
+                Some(embed) => {
+                    let result = embed.tree.set_checked(&node, checked);
+                    if result {
+                        embed.dirty = true;
+                    }
+                    result
+                }
+                None => false,
+            };
+            if changed {
+                self.damage_slot(&slot);
             }
-            *current = checked;
-            let bounds = node.bounds;
-            self.tree.damage().add(bounds);
-            return true;
+            return changed;
         }
-        false
+        self.tree.set_checked(name, checked)
     }
 
     /// Replaces a combo box's items, e.g. when the host supplies the real list.
@@ -771,36 +819,48 @@ impl Surface {
 
     /// Pushes a selection into a combo box.
     pub fn set_selected(&mut self, name: &str, index: usize) -> bool {
-        let Some(id) = self.tree.named(name).map(|node| node.id) else { return false };
-        let Some(node) = self.tree.node_mut(id) else { return false };
-        if let Some(clover_ui::node::Widget::ComboBox { selected, items, .. }) = &mut node.widget {
-            let next = index.min(items.len().saturating_sub(1));
-            if *selected == next {
-                return false;
+        // `slot:node` addresses a control inside an embedded document, so panels
+        // can own their controls without colliding with the page.
+        if let Some((slot, node)) = Self::split_slot(name) {
+            let changed = match self.embed_for_slot(&slot) {
+                Some(embed) => {
+                    let result = embed.tree.set_selected(&node, index);
+                    if result {
+                        embed.dirty = true;
+                    }
+                    result
+                }
+                None => false,
+            };
+            if changed {
+                self.damage_slot(&slot);
             }
-            *selected = next;
-            let bounds = node.bounds;
-            self.tree.damage().add(bounds);
-            let open = self.combo.as_ref().map(|(open, _)| *open == id).unwrap_or(false);
-            if open {
-                self.menu_highlight = next;
-                self.refresh_popup();
-            }
-            return true;
+            return changed;
         }
-        false
+        self.tree.set_selected(name, index)
     }
 
     /// Enables or disables a node, dimming it when disabled.
     pub fn set_enabled(&mut self, name: &str, enabled: bool) -> bool {
-        let Some(node) = self.tree.named_mut(name) else { return false };
-        if node.style.enabled == enabled {
-            return false;
+        // `slot:node` addresses a control inside an embedded document, so panels
+        // can own their controls without colliding with the page.
+        if let Some((slot, node)) = Self::split_slot(name) {
+            let changed = match self.embed_for_slot(&slot) {
+                Some(embed) => {
+                    let result = embed.tree.set_enabled(&node, enabled);
+                    if result {
+                        embed.dirty = true;
+                    }
+                    result
+                }
+                None => false,
+            };
+            if changed {
+                self.damage_slot(&slot);
+            }
+            return changed;
         }
-        node.style.enabled = enabled;
-        let bounds = node.bounds;
-        self.tree.damage().add(bounds);
-        true
+        self.tree.set_enabled(name, enabled)
     }
 
     /// Replaces a named node's children, for dynamic lists.
@@ -848,6 +908,24 @@ impl Surface {
 
     /// Updates a text node's content, e.g. a status readout.
     pub fn set_label(&mut self, name: &str, value: &str) -> bool {
+        // `slot:node` addresses a control inside an embedded document, so panels
+        // can own their controls without colliding with the page.
+        if let Some((slot, node)) = Self::split_slot(name) {
+            let changed = match self.embed_for_slot(&slot) {
+                Some(embed) => {
+                    let result = embed.tree.set_label(&node, value);
+                    if result {
+                        embed.dirty = true;
+                    }
+                    result
+                }
+                None => false,
+            };
+            if changed {
+                self.damage_slot(&slot);
+            }
+            return changed;
+        }
         self.tree.set_label(name, value)
     }
 
@@ -1066,11 +1144,17 @@ impl Surface {
         let rest = action.trim_start_matches('@');
         let mut parts = rest.split(':');
         let kind = parts.next().unwrap_or_default();
-        if kind != "combo" && kind != "menu" {
+        if kind != "combo" && kind != "menu" && kind != "submenu" {
             return;
         }
         let name = parts.next().unwrap_or_default();
         let index: usize = parts.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+
+        if kind == "submenu" {
+            // Keep the parent menu open; the host decides what the submenu holds.
+            self.pending_actions.push(format!("{name}:{index}"));
+            return;
+        }
 
         if kind == "menu" {
             // A context menu has no widget behind it: close and tell the host.
@@ -1140,6 +1224,27 @@ impl Surface {
             return false;
         }
         self.combo = None;
+        self.menu_highlight = usize::MAX;
+        self.build_popup_with(anchor, &items, usize::MAX, prefix, "@menu");
+        true
+    }
+
+    /// Opens a submenu to the right of the popup that is currently open.
+    ///
+    /// Rows behave like any other menu, and choosing one closes the whole cascade.
+    pub fn open_submenu(&mut self, items: Vec<String>, prefix: &str) -> bool {
+        if items.is_empty() {
+            return false;
+        }
+        let parent = match self.tree.overlay() {
+            Some(overlay) => overlay.children.first().map(|list| list.bounds),
+            None => None,
+        };
+        let anchor = parent
+            .map(|bounds| {
+                clover_core::Rect::new(bounds.right() - 4.0, bounds.y + 4.0, bounds.w, 1.0)
+            })
+            .unwrap_or(clover_core::Rect::new(0.0, 0.0, 160.0, 1.0));
         self.menu_highlight = usize::MAX;
         self.build_popup_with(anchor, &items, usize::MAX, prefix, "@menu");
         true
@@ -1217,7 +1322,14 @@ impl Surface {
                 });
             row.style.cursor = clover_ui::style::Cursor::Pointer;
             row.style.ellipsis = true;
-            row.action = Some(format!("{kind}:{name}:{index}"));
+            // A trailing '>' marks a row that opens a submenu: it reports the
+            // choice but keeps the menu open so the host can cascade.
+            let action = if kind == "@menu" && item.trim_end().ends_with('>') {
+                format!("@submenu:{name}:{index}")
+            } else {
+                format!("{kind}:{name}:{index}")
+            };
+            row.action = Some(action);
             let mut label = clover_ui::node::text(item.clone());
             label.style.ellipsis = true;
             label.style.text_color = if highlighted {
@@ -1265,6 +1377,19 @@ impl Surface {
     pub fn dispatch(&mut self, event: UiEvent) -> Vec<RouteEntry> {
         match event {
             UiEvent::Pointer(p) => {
+                // A click inside an embedded document belongs to that document.
+                // Forwarding it (instead of hit-testing the page) is what makes a
+                // panel a panel rather than a picture of one.
+                if let Some((source, bounds)) = self.content_at(p.position) {
+                    let local = clover_core::Point::new(p.position.x - bounds.x, p.position.y - bounds.y);
+                    if let Some(embed) = self.embeds.get_mut(&source) {
+                        let actions = embed.dispatch_pointer(p.action, local);
+                        self.pending_actions.extend(actions);
+                        let node_bounds = bounds;
+                        self.tree.damage().add(node_bounds);
+                        return Vec::new();
+                    }
+                }
                 self.tree.update_hover(Some(p.position));
                 match p.action {
                     clover_ui::PointerAction::Down => {
@@ -1395,6 +1520,14 @@ impl Surface {
                 }
             }
             UiEvent::Wheel(w) => {
+                if let Some((source, bounds)) = self.content_at(w.position) {
+                    let local = clover_core::Point::new(w.position.x - bounds.x, w.position.y - bounds.y);
+                    if let Some(embed) = self.embeds.get_mut(&source) {
+                        embed.dispatch_wheel(w.delta, local);
+                        self.tree.damage().add(bounds);
+                        return Vec::new();
+                    }
+                }
                 // Scroll the nearest scrollable ancestor of what is under the
                 // pointer. Positive delta is wheel-up, which moves content down.
                 let chain = self.tree.hit_chain(w.position);
@@ -2022,6 +2155,66 @@ mod tests {
     }
 
     #[test]
+    fn a_click_inside_a_slot_reaches_the_child() {
+        let dir = std::env::temp_dir().join("clover-embed-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let child = dir.join("button.cui");
+        std::fs::write(
+            &child,
+            r##"<Panel Background="#202020" Width="Fill" Height="Fill">
+                  <Panel x:Name="go" Width="60" Height="30" Background="#3B6FD4" Command="child:go"/>
+                </Panel>"##,
+        )
+        .unwrap();
+
+        let markup = format!(
+            r##"<Panel Background="#000000" Width="Fill" Height="Fill"><Content x:Name="slot" Source="{}"/></Panel>"##,
+            child.display()
+        );
+        let root = clover_ui::xaml::parse(&markup, &clover_ui::xaml::NoImages).unwrap();
+        let mut surface = Surface::new(root, 80.0, 80.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        surface.dispatch(drag_event(PointerAction::Down, 20.0, 15.0));
+        surface.dispatch(drag_event(PointerAction::Up, 20.0, 15.0));
+        assert_eq!(surface.take_action().as_deref(), Some("child:go"));
+    }
+
+    #[test]
+    fn slot_addressing_reaches_controls_inside_a_child() {
+        let dir = std::env::temp_dir().join("clover-embed-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let child = dir.join("slider.cui");
+        std::fs::write(
+            &child,
+            r##"<Panel Background="#202020" Width="Fill" Height="Fill">
+                  <Slider x:Name="amount" Value="0" Min="0" Max="100" Width="100" Height="20"/>
+                </Panel>"##,
+        )
+        .unwrap();
+
+        let markup = format!(
+            r##"<Panel Background="#000000" Width="Fill" Height="Fill"><Content x:Name="slot" Source="{}"/></Panel>"##,
+            child.display()
+        );
+        let root = clover_ui::xaml::parse(&markup, &clover_ui::xaml::NoImages).unwrap();
+        let mut surface = Surface::new(root, 160.0, 80.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        assert!(surface.set_value("slot:amount", 60.0), "the slot namespace reaches the child");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        let embed = surface.embeds.values().next().expect("one embedded document");
+        let value = match embed.tree.named("amount").and_then(|node| node.widget.clone()) {
+            Some(clover_ui::node::Widget::Slider { value, .. }) => value,
+            other => panic!("expected a slider, got {other:?}"),
+        };
+        assert_eq!(value, 60.0);
+    }
+
+    #[test]
     fn set_content_swaps_what_the_slot_shows() {
         let dir = std::env::temp_dir().join("clover-embed-test");
         let _ = std::fs::create_dir_all(&dir);
@@ -2047,6 +2240,39 @@ mod tests {
         let _ = surface.frame();
         let after = surface.renderer().canvas().pixel(30, 30);
         assert_eq!(after.r(), 0xC0, "the slot now shows the second document");
+    }
+
+    #[test]
+    fn a_submenu_row_keeps_the_menu_open() {
+        let root = clover_ui::xaml::parse(
+            r##"<Panel Background="#101010" Width="Fill" Height="Fill"/>"##,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        assert!(surface.open_menu(
+            clover_core::Rect::new(20.0, 20.0, 120.0, 20.0),
+            vec!["Delete".into(), "Merge>".into()],
+            "layer"
+        ));
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        // The menu opens below the anchor: 20 + 20 anchor height + 2 gap, then
+        // 2px padding, one 22px row, and half of the next.
+        let y = 20.0 + 20.0 + 2.0 + 2.0 + 22.0 + 11.0;
+        surface.dispatch(drag_event(PointerAction::Down, 60.0, y));
+        surface.dispatch(drag_event(PointerAction::Up, 60.0, y));
+
+        assert_eq!(surface.take_action().as_deref(), Some("layer:1"));
+        assert!(surface.tree().overlay().is_some(), "a submenu row must not close the menu");
+        assert!(surface.open_submenu(vec!["Down".into(), "Visible".into()], "merge"));
+        surface.invalidate_all();
+        let _ = surface.frame();
+        assert!(surface.tree().overlay().is_some(), "the cascade is open");
     }
 
     #[test]

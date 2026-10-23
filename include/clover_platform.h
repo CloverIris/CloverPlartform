@@ -220,6 +220,10 @@ clover_result clover_surface_open_menu(clover_surface *surface, float x, float y
                                        float height, const char *items_csv,
                                        const char *prefix_utf8);
 clover_result clover_surface_close_menu(clover_surface *surface);
+
+/* Opens a submenu beside the open menu; a label ending in '>' keeps it open. */
+clover_result clover_surface_open_submenu(clover_surface *surface, const char *items_csv,
+                                          const char *prefix_utf8);
 clover_result clover_surface_set_enabled(clover_surface *surface, const char *name_utf8, bool enabled);
 
 /* Replaces a named node's children from a fragment, for dynamic lists. */
