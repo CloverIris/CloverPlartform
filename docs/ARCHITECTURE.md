@@ -184,9 +184,15 @@ is visible instead of blank.
 `clover_surface_set_content(slot, path)` swaps what a slot shows while keeping its
 layout — that is how a panel container becomes a place rather than a document.
 
-**Not done yet:** children render sequentially, not on their own threads. The
-structure is isolated enough that parallelising is a scheduling change rather than
-a design change, but the claim "each child on its own thread" is not true today.
+**Children render in parallel.** Each child owns its tree and renderer outright,
+so a frame moves them out of the map, runs every one on the rayon pool, and moves
+the results back — no locks, no shared state between panels. Measured with eight
+panels of thirty rows each: 18.4 ms/frame on one thread, 9.4 ms on two, 4.7 ms on
+eight. `examples/bench_embeds.rs` reproduces it.
+
+A child that panics is caught per job and reported as a failed panel, so one bad
+document cannot take the process down — the same boundary that contains load and
+build errors extends to rendering.
 
 **Binding across levels** is solved by addressing, not by recursion: a name may be
 written `slot:node`, which routes the update into that slot's document. Panels

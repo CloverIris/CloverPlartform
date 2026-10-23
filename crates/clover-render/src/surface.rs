@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use clover_core::{Premul, Rect, Size};
+use rayon::prelude::*;
+
 use clover_ui::{node::Node, NodeId, RouteEntry, SurfaceHandle, UiEvent, UiTree, View};
 
 use crate::canvas::Canvas;
@@ -359,43 +361,46 @@ impl Surface {
             return;
         }
 
+        // Take the children out of the map so each one can be driven on its own
+        // thread. `EmbeddedDocument` owns its tree and renderer outright, which is
+        // what makes this a move rather than a lock.
+        let mut jobs: Vec<EmbedJob> = Vec::with_capacity(wanted.len());
         for (source, width, height) in wanted {
-            let key = format!("__content:{source}");
-            let entry = self.embeds.remove(&source);
-            let mut embed = match entry {
-                Some(embed) => embed,
-                None => match crate::embed::EmbeddedDocument::load(&source, width, height, scale) {
-                    Ok(embed) => embed,
-                    Err(error) => {
-                        std::eprintln!("[clover] embedded document failed: {error}");
-                        let mut placeholder = crate::embed::error_placeholder();
-                        placeholder.style.width = clover_ui::Length::Fill;
-                        placeholder.style.height = clover_ui::Length::Fill;
-                        let mut pixels = crate::canvas::ImagePixels {
-                            width: width.max(1),
-                            height: height.max(1),
-                            pixels: vec![0; (width.max(1) as usize) * (height.max(1) as usize)],
-                        };
-                        let tint = clover_core::Color::rgb(0x5A, 0x1E, 0x24).premultiply();
-                        for pixel in pixels.pixels.iter_mut() {
-                            *pixel = tint.0;
-                        }
+            let existing = self.embeds.remove(&source);
+            jobs.push(EmbedJob { source, width, height, existing });
+        }
+
+        let results: Vec<EmbedOutcome> = jobs
+            .into_par_iter()
+            .map(|job| {
+                // One child panicking must not take the process down; that is the
+                // whole point of per-level isolation.
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_embed(job, scale))) {
+                    Ok(outcome) => outcome,
+                    Err(_) => EmbedOutcome::Failed {
+                        key: String::new(),
+                        pixels: None,
+                        error: "embedded document panicked".to_string(),
+                    },
+                }
+            })
+            .collect();
+
+        for outcome in results {
+            match outcome {
+                EmbedOutcome::Rendered { source, embed, texture } => {
+                    if let Some((key, pixels)) = texture {
                         self.renderer.images.insert_named(key, pixels);
-                        continue;
                     }
-                },
-            };
-            embed.layout(width, height, scale);
-            let changed = embed.render();
-            if changed {
-                let texture = crate::canvas::ImagePixels {
-                    width: embed.texture.width,
-                    height: embed.texture.height,
-                    pixels: embed.texture.pixels.clone(),
-                };
-                self.renderer.images.insert_named(key, texture);
+                    self.embeds.insert(source, *embed);
+                }
+                EmbedOutcome::Failed { key, pixels, error } => {
+                    std::eprintln!("[clover] embedded document failed: {error}");
+                    if let (false, Some(pixels)) = (key.is_empty(), pixels) {
+                        self.renderer.images.insert_named(key, pixels);
+                    }
+                }
             }
-            self.embeds.insert(source, embed);
         }
     }
 
@@ -1624,6 +1629,56 @@ enum StyleTarget {
     Background(clover_core::Color),
 }
 
+/// One child document to load, lay out and render off the UI thread.
+struct EmbedJob {
+    source: String,
+    width: u32,
+    height: u32,
+    existing: Option<crate::embed::EmbeddedDocument>,
+}
+
+/// What a worker produced.
+enum EmbedOutcome {
+    Rendered {
+        source: String,
+        embed: Box<crate::embed::EmbeddedDocument>,
+        texture: Option<(String, crate::canvas::ImagePixels)>,
+    },
+    Failed {
+        key: String,
+        pixels: Option<crate::canvas::ImagePixels>,
+        error: String,
+    },
+}
+
+/// Runs one embedded document to completion. Executed on a rayon worker.
+fn run_embed(job: EmbedJob, scale: f32) -> EmbedOutcome {
+    let key = format!("__content:{}", job.source);
+    let mut embed = match job.existing {
+        Some(embed) => embed,
+        None => match crate::embed::EmbeddedDocument::load(&job.source, job.width, job.height, scale) {
+            Ok(embed) => embed,
+            Err(error) => {
+                // A failed child still occupies its box, visibly marked.
+                let mut pixels = crate::canvas::ImagePixels {
+                    width: job.width.max(1),
+                    height: job.height.max(1),
+                    pixels: vec![0; (job.width.max(1) as usize) * (job.height.max(1) as usize)],
+                };
+                let tint = clover_core::Color::rgb(0x5A, 0x1E, 0x24).premultiply();
+                for pixel in pixels.pixels.iter_mut() {
+                    *pixel = tint.0;
+                }
+                return EmbedOutcome::Failed { key, pixels: Some(pixels), error };
+            }
+        },
+    };
+    embed.layout(job.width, job.height, scale);
+    let changed = embed.render();
+    let texture = changed.then(|| (key, embed.snapshot_texture()));
+    EmbedOutcome::Rendered { source: job.source, embed: Box::new(embed), texture }
+}
+
 /// Collects embedded documents and the physical size their boxes ask for.
 fn collect_content(node: &Node, scale: f32, out: &mut Vec<(String, u32, u32)>) {
     if !node.visible {
@@ -2152,6 +2207,44 @@ mod tests {
         // The failed child is marked, the page still paints.
         let pixel = surface.renderer().canvas().pixel(40, 40);
         assert!(pixel.a() > 0, "the parent still rendered something");
+    }
+
+    #[test]
+    fn several_embedded_documents_render_independently() {
+        let dir = std::env::temp_dir().join("clover-embed-parallel");
+        let _ = std::fs::create_dir_all(&dir);
+        let mut paths = Vec::new();
+        let colors = ["#C02020", "#20C020", "#2020C0", "#C0C020"];
+        for (index, color) in colors.iter().enumerate() {
+            let path = dir.join(format!("panel{index}.cui"));
+            std::fs::write(
+                &path,
+                format!(r##"<Panel Background="{color}" Width="Fill" Height="Fill"/>"##),
+            )
+            .unwrap();
+            paths.push(path);
+        }
+
+        let markup = format!(
+            r##"<Panel Background="#000000" Width="Fill" Height="Fill">
+                  <Content x:Name="a" Source="{}" Width="50" Height="50"/>
+                  <Content x:Name="b" Source="{}" Width="50" Height="50"/>
+                  <Content x:Name="c" Source="{}" Width="50" Height="50"/>
+                  <Content x:Name="d" Source="{}" Width="50" Height="50"/>
+                </Panel>"##,
+            paths[0].display(),
+            paths[1].display(),
+            paths[2].display(),
+            paths[3].display()
+        );
+        let root = clover_ui::xaml::parse(&markup, &clover_ui::xaml::NoImages).unwrap();
+        let mut surface = Surface::new(root, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        assert_eq!(surface.embeds.len(), 4, "every child must come back from its worker");
+        let pixel = surface.renderer().canvas().pixel(25, 25);
+        assert_eq!((pixel.r(), pixel.g(), pixel.b()), (0xC0, 0x20, 0x20));
     }
 
     #[test]

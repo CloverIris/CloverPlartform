@@ -220,6 +220,18 @@ impl EmbeddedDocument {
         moved
     }
 
+    /// A copy of the rendered pixels, for handing to the parent's image store.
+    ///
+    /// The copy happens on the worker that rendered the child, so the UI thread
+    /// never touches the child's buffer.
+    pub fn snapshot_texture(&self) -> ImagePixels {
+        ImagePixels {
+            width: self.texture.width,
+            height: self.texture.height,
+            pixels: self.texture.pixels.clone(),
+        }
+    }
+
     /// Paints a visible error state into the texture so the host sees which child
     /// failed without reading logs.
     pub fn paint_error(&mut self, message: &str) {
