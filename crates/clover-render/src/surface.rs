@@ -98,6 +98,24 @@ impl DirectSurface {
     /// `width * height` words. Returning without writing is fine; the previous
     /// contents are preserved only if the closure writes every pixel, so treat
     /// the buffer as undefined.
+    /// Like [`Self::write`], but the back buffer starts as a copy of the last
+    /// published frame.
+    ///
+    /// A partial update — repainting only the region a brush touched — needs the
+    /// rest of the image to survive. The plain `write` swaps buffers, so the back
+    /// buffer holds the frame from *two* updates ago; copying first is what makes
+    /// incremental painting correct.
+    pub fn write_incremental(&self, f: impl FnOnce(&mut [u32], u32, u32)) {
+        {
+            // Written in place: the surface has one writer and every reader holds
+            // this lock while sampling, so no copy of the previous frame is needed
+            // and no reader can observe a half-painted image.
+            let mut guard = self.front.lock().unwrap_or_else(|e| e.into_inner());
+            f(&mut guard.front, self.width(), self.height());
+        }
+        self.version.fetch_add(1, Ordering::Release);
+    }
+
     pub fn write(&self, f: impl FnOnce(&mut [u32], u32, u32)) {
         {
             let mut guard = self.front.lock().unwrap_or_else(|e| e.into_inner());
@@ -297,7 +315,7 @@ impl Surface {
             return;
         }
         self.renderer.render(&list, &damage, Premul::TRANSPARENT);
-        self.composite_direct_surfaces(&list);
+        self.composite_direct_surfaces(&list, &damage);
         self.generation += 1;
     }
 
@@ -427,9 +445,26 @@ impl Surface {
             .collect()
     }
 
-    fn composite_direct_surfaces(&mut self, list: &crate::display_list::DisplayList) {
+    fn composite_direct_surfaces(
+        &mut self,
+        list: &crate::display_list::DisplayList,
+        damage: &[Rect],
+    ) {
+        if damage.is_empty() {
+            return;
+        }
         for (handle, rect, clip) in list.surfaces() {
             let Some(surface) = self.direct.get(&handle).cloned() else { continue };
+            // Only the damaged pieces need re-blending; the rest of the parent
+            // frame was not repainted at all.
+            let regions: Vec<Rect> = damage
+                .iter()
+                .map(|piece| piece.intersect(rect).intersect(clip))
+                .filter(|piece| !piece.is_empty())
+                .collect();
+            if regions.is_empty() {
+                continue;
+            }
             let canvas = self.renderer.canvas_mut();
             surface.read(|pixels, width, height| {
                 if width == 0 || height == 0 {
@@ -438,20 +473,18 @@ impl Surface {
                 let dest = rect;
                 let sx = width as f32 / dest.w.max(1.0);
                 let sy = height as f32 / dest.h.max(1.0);
-                let area = dest.intersect(clip);
-                if area.is_empty() {
-                    return;
-                }
-                for y in area.y.floor() as i32..area.bottom().ceil() as i32 {
-                    for x in area.x.floor() as i32..area.right().ceil() as i32 {
-                        let u = ((x as f32 + 0.5 - dest.x) * sx).clamp(0.0, width as f32 - 0.001);
-                        let v = ((y as f32 + 0.5 - dest.y) * sy).clamp(0.0, height as f32 - 0.001);
-                        let index = (v as usize) * (width as usize) + u as usize;
-                        let color = Premul(*pixels.get(index).unwrap_or(&0));
-                        if color.a() == 0 {
-                            continue;
+                for area in &regions {
+                    for y in area.y.floor() as i32..area.bottom().ceil() as i32 {
+                        for x in area.x.floor() as i32..area.right().ceil() as i32 {
+                            let u = ((x as f32 + 0.5 - dest.x) * sx).clamp(0.0, width as f32 - 0.001);
+                            let v = ((y as f32 + 0.5 - dest.y) * sy).clamp(0.0, height as f32 - 0.001);
+                            let index = (v as usize) * (width as usize) + u as usize;
+                            let color = Premul(*pixels.get(index).unwrap_or(&0));
+                            if color.a() == 0 {
+                                continue;
+                            }
+                            canvas.blend(x, y, color, clip);
                         }
-                        canvas.blend(x, y, color, clip);
                     }
                 }
             });

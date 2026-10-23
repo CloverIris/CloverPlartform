@@ -268,6 +268,14 @@ clover_result clover_direct_begin_write(clover_surface *surface, uint64_t handle
 
 clover_result clover_direct_commit(clover_surface *surface, uint64_t handle);
 
+/*
+ * Incremental variant: the back buffer starts as a copy of the last published
+ * frame, so repainting only a damaged region keeps the rest of the image.
+ */
+clover_result clover_direct_begin_write_incremental(clover_surface *surface, uint64_t handle,
+                                                    uint32_t **out_pixels, size_t *out_stride,
+                                                    uint32_t *out_rows);
+
 /* Binds a named <CloverSurface> node to a live direct region. */
 clover_result clover_surface_bind_direct(clover_surface *surface, const char *name_utf8,
                                          uint64_t handle);

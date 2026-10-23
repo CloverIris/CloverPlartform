@@ -1219,6 +1219,42 @@ pub unsafe extern "C" fn clover_surface_open_submenu(
     }
 }
 
+/// Locks the back buffer for an *incremental* update.
+///
+/// The back buffer starts as a copy of the last published frame, so a caller that
+/// repaints only a damaged region keeps the rest of the image intact.
+///
+/// # Safety
+/// Output pointers must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn clover_direct_begin_write_incremental(
+    surface: *mut CloverSurface,
+    handle: u64,
+    out_pixels: *mut *mut u32,
+    out_stride: *mut usize,
+    out_rows: *mut u32,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if out_pixels.is_null() || out_stride.is_null() || out_rows.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let Some(region) = surface.surface.direct(clover_ui::SurfaceHandle(handle)) else {
+        return CloverResult::UnknownHandle;
+    };
+    let mut pixels: *mut u32 = std::ptr::null_mut();
+    let mut stride = 0usize;
+    let mut rows = 0u32;
+    region.write_incremental(|buffer, width, height| {
+        pixels = buffer.as_mut_ptr();
+        stride = width as usize;
+        rows = height;
+    });
+    *out_pixels = pixels;
+    *out_stride = stride;
+    *out_rows = rows;
+    CloverResult::Ok
+}
+
 /// Registers an image from a PNG file and returns its handle, or 0 on failure.
 ///
 /// # Safety
