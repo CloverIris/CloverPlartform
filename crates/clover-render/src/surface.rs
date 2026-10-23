@@ -170,6 +170,8 @@ pub struct Surface {
     combo: Option<(NodeId, String)>,
     /// Active splitter drag: (splitter node, size at press, pointer at press).
     splitter: Option<(NodeId, f32, f32)>,
+    /// Embedded documents, keyed by their resolved path.
+    embeds: HashMap<String, crate::embed::EmbeddedDocument>,
     /// Rows of the open popup, in display order.
     menu_rows: Vec<(NodeId, usize)>,
     /// Highlighted row index inside the open popup.
@@ -193,6 +195,7 @@ impl Surface {
             widget_press: None,
             combo: None,
             splitter: None,
+            embeds: HashMap::new(),
             menu_rows: Vec::new(),
             menu_highlight: 0,
         };
@@ -272,6 +275,9 @@ impl Surface {
         }
         let metrics = &self.renderer;
         self.tree.layout(metrics);
+        // Children must be laid out and rendered before the parent's display list
+        // is built, because the parent only sees their textures.
+        self.sync_embeds();
 
         let list = build(&self.tree, self.tree.scale(), &self.renderer.text, &self.renderer.images);
         // The tree works in logical pixels; the renderer works in physical ones.
@@ -291,6 +297,84 @@ impl Surface {
         self.renderer.render(&list, &damage, Premul::TRANSPARENT);
         self.composite_direct_surfaces(&list);
         self.generation += 1;
+    }
+
+    /// Loads, lays out and renders every embedded document.
+    ///
+    /// Failures are contained: a child that cannot load is recorded, marked on
+    /// screen, and skipped. The parent keeps rendering.
+    fn sync_embeds(&mut self) {
+        let scale = self.tree.scale();
+        let mut wanted: Vec<(String, u32, u32)> = Vec::new();
+        collect_content(self.tree.root(), scale, &mut wanted);
+        if let Some(overlay) = self.tree.overlay() {
+            collect_content(overlay, scale, &mut wanted);
+        }
+        if wanted.is_empty() {
+            return;
+        }
+
+        for (source, width, height) in wanted {
+            let key = format!("__content:{source}");
+            let entry = self.embeds.remove(&source);
+            let mut embed = match entry {
+                Some(embed) => embed,
+                None => match crate::embed::EmbeddedDocument::load(&source, width, height, scale) {
+                    Ok(embed) => embed,
+                    Err(error) => {
+                        std::eprintln!("[clover] embedded document failed: {error}");
+                        let mut placeholder = crate::embed::error_placeholder();
+                        placeholder.style.width = clover_ui::Length::Fill;
+                        placeholder.style.height = clover_ui::Length::Fill;
+                        let mut pixels = crate::canvas::ImagePixels {
+                            width: width.max(1),
+                            height: height.max(1),
+                            pixels: vec![0; (width.max(1) as usize) * (height.max(1) as usize)],
+                        };
+                        let tint = clover_core::Color::rgb(0x5A, 0x1E, 0x24).premultiply();
+                        for pixel in pixels.pixels.iter_mut() {
+                            *pixel = tint.0;
+                        }
+                        self.renderer.images.insert_named(key, pixels);
+                        continue;
+                    }
+                },
+            };
+            embed.layout(width, height, scale);
+            let changed = embed.render();
+            if changed {
+                let texture = crate::canvas::ImagePixels {
+                    width: embed.texture.width,
+                    height: embed.texture.height,
+                    pixels: embed.texture.pixels.clone(),
+                };
+                self.renderer.images.insert_named(key, texture);
+            }
+            self.embeds.insert(source, embed);
+        }
+    }
+
+    /// Replaces what an embedded document shows, without touching its box.
+    pub fn set_content(&mut self, name: &str, source: &str) -> bool {
+        let Some(node) = self.tree.named_mut(name) else { return false };
+        let View::Content { source: current } = &mut node.view else { return false };
+        if *current == source {
+            return false;
+        }
+        self.embeds.remove(current);
+        let _ = self.renderer.images.handle_for(&format!("__content:{source}"));
+        *current = source.to_string();
+        self.tree.invalidate_layout();
+        self.tree.damage().mark_full();
+        true
+    }
+
+    /// Errors reported by embedded documents, for diagnostics.
+    pub fn embed_errors(&self) -> Vec<(String, String)> {
+        self.embeds
+            .values()
+            .filter_map(|embed| embed.error.clone().map(|error| (embed.source.clone(), error)))
+            .collect()
     }
 
     fn composite_direct_surfaces(&mut self, list: &crate::display_list::DisplayList) {
@@ -1407,6 +1491,25 @@ enum StyleTarget {
     Background(clover_core::Color),
 }
 
+/// Collects embedded documents and the physical size their boxes ask for.
+fn collect_content(node: &Node, scale: f32, out: &mut Vec<(String, u32, u32)>) {
+    if !node.visible {
+        return;
+    }
+    if let View::Content { source } = &node.view {
+        let box_rect = node.style.padding.deflate(node.bounds).scale(scale);
+        out.push((
+            source.clone(),
+            box_rect.w.round().max(1.0) as u32,
+            box_rect.h.round().max(1.0) as u32,
+        ));
+        return;
+    }
+    for child in &node.children {
+        collect_content(child, scale, out);
+    }
+}
+
 fn advance_node(node: &mut Node, now_ms: u64, changed: &mut Vec<Rect>, active: &mut bool) {
     if let Some(animation) = node.animation {
         let progress = animation.progress(now_ms);
@@ -1870,6 +1973,80 @@ mod tests {
         assert_eq!(selected, 2, "two downs then enter selects the third item");
         assert_eq!(surface.take_action().as_deref(), Some("change:blend:2"));
         assert!(surface.tree().overlay().is_none(), "choosing closes the popup");
+    }
+
+    #[test]
+    fn an_embedded_document_is_composited_into_its_box() {
+        let dir = std::env::temp_dir().join("clover-embed-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let child = dir.join("child.cui");
+        std::fs::write(
+            &child,
+            r##"<Panel Background="#20C040" Width="Fill" Height="Fill"/>"##,
+        )
+        .unwrap();
+
+        let markup = format!(
+            r##"<StackPanel Background="#101010" Width="Fill" Height="Fill">
+                  <Panel Height="40" Background="#303030"/>
+                  <Content x:Name="slot" Source="{}"/>
+                </StackPanel>"##,
+            child.display()
+        );
+        let root = clover_ui::xaml::parse(&markup, &clover_ui::xaml::NoImages).unwrap();
+        let mut surface = Surface::new(root, 120.0, 120.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        let inside = surface.renderer().canvas().pixel(60, 80);
+        assert_eq!(inside.g(), 0xC0, "the child's background reaches the parent");
+        let header = surface.renderer().canvas().pixel(60, 10);
+        assert_eq!(header.r(), 0x30, "the parent's own chrome is untouched");
+    }
+
+    #[test]
+    fn a_broken_embedded_document_does_not_break_the_parent() {
+        let root = clover_ui::xaml::parse(
+            r##"<StackPanel Background="#101010" Width="Fill" Height="Fill">
+                  <Content x:Name="slot" Source="/definitely/not/here.cui"/>
+                </StackPanel>"##,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(root, 80.0, 80.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        // The failed child is marked, the page still paints.
+        let pixel = surface.renderer().canvas().pixel(40, 40);
+        assert!(pixel.a() > 0, "the parent still rendered something");
+    }
+
+    #[test]
+    fn set_content_swaps_what_the_slot_shows() {
+        let dir = std::env::temp_dir().join("clover-embed-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let first = dir.join("first.cui");
+        let second = dir.join("second.cui");
+        std::fs::write(&first, r##"<Panel Background="#2040C0" Width="Fill" Height="Fill"/>"##).unwrap();
+        std::fs::write(&second, r##"<Panel Background="#C04020" Width="Fill" Height="Fill"/>"##).unwrap();
+
+        let markup = format!(
+            r##"<Panel Background="#000000" Width="Fill" Height="Fill">
+                  <Content x:Name="slot" Source="{}"/>
+                </Panel>"##,
+            first.display()
+        );
+        let root = clover_ui::xaml::parse(&markup, &clover_ui::xaml::NoImages).unwrap();
+        let mut surface = Surface::new(root, 60.0, 60.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+        assert_eq!(surface.renderer().canvas().pixel(30, 30).b(), 0xC0);
+
+        assert!(surface.set_content("slot", &second.display().to_string()));
+        surface.invalidate_all();
+        let _ = surface.frame();
+        let after = surface.renderer().canvas().pixel(30, 30);
+        assert_eq!(after.r(), 0xC0, "the slot now shows the second document");
     }
 
     #[test]

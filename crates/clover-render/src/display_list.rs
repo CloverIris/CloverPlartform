@@ -313,6 +313,22 @@ fn walk(
                 });
             }
         }
+        View::Content { source } => {
+            // The parent composites the child's rendered texture; if the child has
+            // not rendered yet (or failed) the box stays empty rather than wrong.
+            if let Some(handle) = images.handle_for(&format!("__content:{source}")) {
+                if let Some(image) = images.get(handle) {
+                    let content_box = node.style.padding.deflate(node.bounds).scale(scale);
+                    let fitted = fit_rect(content_box, clover_ui::Fit::Fill, Size::new(image.width as f32, image.height as f32));
+                    out.push(DrawCmd::Image {
+                        rect: fitted,
+                        image: Arc::clone(image),
+                        clip,
+                        opacity: 1.0,
+                    });
+                }
+            }
+        }
         View::Path { geometry, fill, stroke, stroke_width } => {
             if fill.is_some() || *stroke_width > 0.0 {
                 let content_box = node.style.padding.deflate(node.bounds);

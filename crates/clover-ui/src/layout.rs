@@ -138,6 +138,20 @@ pub fn measure(node: &Node, available: Size, metrics: &dyn LayoutMetrics) -> Siz
             content.w = content.w.max(capped);
             content.h = content.h.max(text_size.h);
         }
+        View::Content { .. } => {
+            // An embedded document fills whatever the parent gives it; it cannot
+            // size itself without loading the child, which layout must not do.
+            let width = style
+                .width
+                .resolve(available.w)
+                .unwrap_or(inner_width.max(0.0));
+            let height = style
+                .height
+                .resolve(available.h)
+                .unwrap_or(available.h.max(0.0));
+            content.w = content.w.max(width);
+            content.h = content.h.max(height);
+        }
         View::Path { geometry, stroke_width, .. } => {
             let bounds = geometry.bounds();
             let pad = stroke_width * 0.5;

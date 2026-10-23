@@ -201,6 +201,16 @@ clover_result clover_surface_set_items(clover_surface *surface, const char *name
                                        const char *items_csv);
 
 /*
+ * Composed documents
+ * ------------------
+ * `<Content x:Name="left" Source="panels/color.cui"/>` embeds another document.
+ * The child owns everything inside its box and renders into its own buffer, so a
+ * child that fails to load cannot take the page down with it.
+ */
+clover_result clover_surface_set_content(clover_surface *surface, const char *name_utf8,
+                                         const char *path_utf8);
+
+/*
  * Menus
  * -----
  * A context menu is the same popup as a combo box: clamped, scrollable, with

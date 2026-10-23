@@ -23,7 +23,7 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 
 ![A .cui document rendered by the framework](docs/cui.png)
 
-> Status: **0.18 — popups that behave**. The pipeline works end to end (tree →
+> Status: **0.19 — composed documents**. The pipeline works end to end (tree →
 > layout → display list → tile-parallel raster → frame), both authoring
 > front-ends produce the same tree, layout supports flex-style `Fill`, text
 > wraps, and keyboard focus is routed. Styles, templates, bindings and animation
@@ -72,6 +72,10 @@ A whole UI from one `.cui` file — data, styles, bindings and a scrollable list
 * **Control templates.** `<Template x:Key="chip">` in a stylesheet replaces a
   control's visuals while keeping its properties; `{Binding Content}` and
   `{Binding Tag}` bind the control into the template.
+* **Composed documents.** `<Content Source="panels/color.cui"/>` embeds another
+  document in a box. Each child owns its tree and renderer and paints into its own
+  buffer, so a broken child is marked and skipped instead of taking the page down.
+  `set_content` swaps what a slot shows without touching its layout.
 * **Menus that behave.** Combo popups and context menus share one implementation:
   placement is clamped to the viewport (and flips above when there is no room
   below), tall lists scroll, rows highlight on hover, arrow keys move the

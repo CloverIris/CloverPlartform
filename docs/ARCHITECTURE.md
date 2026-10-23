@@ -162,6 +162,36 @@ Today `hdr_raster` is false, so an HDR request lands on `Bgra8Sdr` with
 silent one — the whole point of recording the reason is that a host can surface
 it and a future float raster path only has to flip one flag.
 
+## 5a00. Composed documents
+
+A single document cannot stay readable once a workspace has a dozen panels, and it
+forces every panel to be edited in the same file as every other. So a document may
+embed another:
+
+```xml
+<Content x:Name="left" Source="panels/left.cui"/>
+```
+
+The parent owns the **box**; the child owns everything inside it. Each child has
+its own `UiTree`, its own `CpuRenderer` and its own texture, and the parent
+composites that texture like an image.
+
+**Error isolation is the point.** A child is loaded, built and rendered behind a
+boundary: a missing file, a parse error or a failed build marks that box and stops
+there. The parent keeps running, the other children keep running, and the failure
+is visible instead of blank.
+
+`clover_surface_set_content(slot, path)` swaps what a slot shows while keeping its
+layout — that is how a panel container becomes a place rather than a document.
+
+**Not done yet:** children render sequentially, not on their own threads. The
+structure is isolated enough that parallelising is a scheduling change rather than
+a design change, but the claim "each child on its own thread" is not true today.
+
+**Binding across levels** is also unsolved: `set_value` addresses nodes in the
+parent's tree, so a control that moves into a child document stops receiving model
+updates. The fix is a per-slot data context, not a recursive name lookup.
+
 ## 5a0. Popups
 
 A popup is not "a list drawn near a box". It is a placement problem, a scroll

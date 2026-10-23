@@ -59,6 +59,11 @@ pub enum View {
     Image { handle: ImageHandle, fit: Fit },
     /// A child surface whose pixels are written by another thread.
     Surface { handle: SurfaceHandle },
+    /// Another `.cui` document embedded here.
+    ///
+    /// The parent layout owns the box; the child document owns everything inside
+    /// it and renders independently, so a broken child cannot corrupt the page.
+    Content { source: String },
     /// A vector path, optionally filled and stroked.
     Path {
         geometry: std::sync::Arc<clover_core::PathGeometry>,
@@ -843,6 +848,15 @@ pub fn scrollbar(name: &str, horizontal: bool, offset: f32, viewport: f32, exten
     } else {
         crate::style::Cursor::ResizeVertical
     };
+    node
+}
+
+/// Embeds another `.cui` document, resolved relative to this one.
+pub fn content(source: &str) -> Node {
+    let mut node = Node::new();
+    node.view = View::Content { source: source.to_string() };
+    node.style.width = crate::style::Length::Fill;
+    node.style.height = crate::style::Length::Fill;
     node
 }
 

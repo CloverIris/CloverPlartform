@@ -1159,6 +1159,35 @@ pub unsafe extern "C" fn clover_surface_close_menu(surface: *mut CloverSurface) 
     CloverResult::Ok
 }
 
+/// Swaps the document shown by an embedded `<Content x:Name="...">` node.
+///
+/// The box keeps its layout; only the child document changes.
+///
+/// # Safety
+/// Both strings must be NUL-terminated.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_set_content(
+    surface: *mut CloverSurface,
+    name_utf8: *const c_char,
+    path_utf8: *const c_char,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    if name_utf8.is_null() || path_utf8.is_null() {
+        return CloverResult::NullArgument;
+    }
+    let (Ok(name), Ok(path)) = (
+        CStr::from_ptr(name_utf8).to_str(),
+        CStr::from_ptr(path_utf8).to_str(),
+    ) else {
+        return CloverResult::ParseError;
+    };
+    if surface.surface.set_content(name, path) {
+        CloverResult::Ok
+    } else {
+        CloverResult::UnknownHandle
+    }
+}
+
 /// Registers an image from a PNG file and returns its handle, or 0 on failure.
 ///
 /// # Safety

@@ -119,7 +119,7 @@ pub fn parse_with_data(
     data: &crate::binding::DataContext,
 ) -> Result<Node, XamlError> {
     let document = parse_xml(source)?;
-    let context = BuildContext { images, sheet, data };
+    let context = BuildContext { images, sheet, data, base: None };
     build(&document, &context, InheritedStyle::default())
 }
 
@@ -129,6 +129,9 @@ struct BuildContext<'a> {
     images: &'a dyn ImageResolver,
     sheet: &'a crate::style_sheet::StyleSheet,
     data: &'a crate::binding::DataContext,
+    /// Directory of the document being built, so `<Content Source>` resolves
+    /// relative to it rather than to the process working directory.
+    base: Option<&'a std::path::Path>,
 }
 
 /// Inherited properties: text styling cascades to children, everything else does
@@ -261,6 +264,8 @@ pub struct UiDocument {
     /// Optional overlay root, painted above the page.
     overlay: Option<XmlNode>,
     source: String,
+    /// Directory the document lives in; `<Content>` resolves against it.
+    base: Option<std::path::PathBuf>,
 }
 
 impl UiDocument {
@@ -341,14 +346,30 @@ impl UiDocument {
         let Some(root) = root else {
             return err(document.offset, "a .cui document needs a page root");
         };
-        Ok(Self { data, sheet, resources, root, overlay, source: source.to_string() })
+        Ok(Self {
+            data,
+            sheet,
+            resources,
+            root,
+            overlay,
+            source: source.to_string(),
+            base: None,
+        })
     }
 
     /// Reads and parses a `.cui` file.
     pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self, String> {
-        let source = std::fs::read_to_string(path.as_ref())
+        let path = path.as_ref();
+        let source = std::fs::read_to_string(path)
             .map_err(|error| format!("read .cui failed: {error}"))?;
-        Self::parse(&source).map_err(|error| error.to_string())
+        let mut document = Self::parse(&source).map_err(|error| error.to_string())?;
+        document.base = path.parent().map(|dir| dir.to_path_buf());
+        Ok(document)
+    }
+
+    /// Directory this document was loaded from, used to resolve `<Content>`.
+    pub fn base_dir(&self) -> Option<&std::path::Path> {
+        self.base.as_deref()
     }
 
     /// Image resources declared by the document, as `(key, relative path)`.
@@ -376,7 +397,13 @@ impl UiDocument {
         overrides: &crate::binding::DataContext,
     ) -> Result<Node, XamlError> {
         let data = self.data.merged(overrides);
-        let context = BuildContext { images, sheet: &self.sheet, data: &data };
+        let base = self.base.clone();
+        let context = BuildContext {
+            images,
+            sheet: &self.sheet,
+            data: &data,
+            base: base.as_deref(),
+        };
         build(&self.root, &context, InheritedStyle::default())
     }
 
@@ -384,7 +411,13 @@ impl UiDocument {
     pub fn build_overlay(&self, images: &dyn ImageResolver) -> Result<Option<Node>, XamlError> {
         let Some(overlay) = &self.overlay else { return Ok(None) };
         let data = self.data.clone();
-        let context = BuildContext { images, sheet: &self.sheet, data: &data };
+        let base = self.base.clone();
+        let context = BuildContext {
+            images,
+            sheet: &self.sheet,
+            data: &data,
+            base: base.as_deref(),
+        };
         // The overlay root spans the viewport but must not swallow clicks: the
         // declared elements become children so their Position and size apply.
         let mut wrapper = crate::node::panel();
@@ -749,6 +782,20 @@ fn build(
                 *target = xml.attr("Target").map(str::to_string);
             }
             bar
+        }
+        "content" | "include" => {
+            let raw = xml
+                .attr("Source")
+                .or_else(|| xml.attr("Content"))
+                .ok_or_else(|| XamlError { message: "<Content> needs Source".into(), offset: xml.offset })?;
+            let resolved = context.data.resolve_text(raw);
+            // Resolve against the document, so a page can move without breaking
+            // its children.
+            let path = match context.base {
+                Some(base) => base.join(&resolved),
+                None => std::path::PathBuf::from(&resolved),
+            };
+            node::content(&path.to_string_lossy())
         }
         "path" | "icon" => {
             let data = xml

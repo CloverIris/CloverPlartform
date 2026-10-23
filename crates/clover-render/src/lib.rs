@@ -10,6 +10,7 @@ pub mod canvas;
 pub mod path;
 pub mod context;
 pub mod display_list;
+pub mod embed;
 pub mod image;
 pub mod renderer;
 pub mod surface;
