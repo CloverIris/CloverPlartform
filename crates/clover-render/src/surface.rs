@@ -105,6 +105,17 @@ impl DirectSurface {
     /// rest of the image to survive. The plain `write` swaps buffers, so the back
     /// buffer holds the frame from *two* updates ago; copying first is what makes
     /// incremental painting correct.
+    /// Takes the back buffer, primed with a copy of the published frame.
+    ///
+    /// Used for partial updates: the caller repaints only the damaged region and
+    /// publishes the whole buffer through the normal commit path.
+    pub fn take_back_incremental(&self) -> Vec<u32> {
+        let mut guard = self.front.lock().unwrap_or_else(|e| e.into_inner());
+        let Buffers { front, back } = &mut *guard;
+        back.copy_from_slice(front);
+        std::mem::take(back)
+    }
+
     pub fn write_incremental(&self, f: impl FnOnce(&mut [u32], u32, u32)) {
         {
             // Written in place: the surface has one writer and every reader holds
@@ -761,6 +772,14 @@ impl Surface {
             self.tree.damage().add(rect);
         }
         active
+    }
+
+    /// Marks one region of the page for repaint.
+    ///
+    /// A partial canvas update only needs its own rect repainted; invalidating the
+    /// whole page would throw away the gain.
+    pub fn invalidate_rect(&mut self, rect: Rect) {
+        self.tree.damage().add(rect);
     }
 
     /// Replaces the overlay root; popups live here so nothing clips them.
@@ -2240,6 +2259,30 @@ mod tests {
         // The failed child is marked, the page still paints.
         let pixel = surface.renderer().canvas().pixel(40, 40);
         assert!(pixel.a() > 0, "the parent still rendered something");
+    }
+
+    #[test]
+    fn an_incremental_buffer_starts_from_the_published_frame() {
+        let region = DirectSurface::new(4, 1);
+        region.write(|pixels, _, _| {
+            for pixel in pixels.iter_mut() {
+                *pixel = 0xFF11_2233;
+            }
+        });
+
+        let mut buffer = region.take_back_incremental();
+        assert_eq!(
+            buffer[0], 0xFF11_2233,
+            "a partial update must start from what is on screen, not from an older frame"
+        );
+
+        // Paint one pixel and publish: the rest must survive.
+        buffer[2] = 0xFF44_5566;
+        region.publish_back(buffer);
+        region.read(|pixels, _, _| {
+            assert_eq!(pixels[0], 0xFF11_2233);
+            assert_eq!(pixels[2], 0xFF44_5566);
+        });
     }
 
     #[test]

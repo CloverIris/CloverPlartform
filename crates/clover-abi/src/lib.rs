@@ -1221,8 +1221,9 @@ pub unsafe extern "C" fn clover_surface_open_submenu(
 
 /// Locks the back buffer for an *incremental* update.
 ///
-/// The back buffer starts as a copy of the last published frame, so a caller that
-/// repaints only a damaged region keeps the rest of the image intact.
+/// The buffer starts as a copy of the published frame, so a caller that repaints
+/// only a damaged region keeps the rest of the image. Publish it with
+/// `clover_direct_commit_rect` so only that region is repainted.
 ///
 /// # Safety
 /// Output pointers must be valid.
@@ -1238,20 +1239,46 @@ pub unsafe extern "C" fn clover_direct_begin_write_incremental(
     if out_pixels.is_null() || out_stride.is_null() || out_rows.is_null() {
         return CloverResult::NullArgument;
     }
-    let Some(region) = surface.surface.direct(clover_ui::SurfaceHandle(handle)) else {
+    let Some(entry) = surface.direct.iter().find(|(h, _)| h.0 == handle) else {
         return CloverResult::UnknownHandle;
     };
-    let mut pixels: *mut u32 = std::ptr::null_mut();
-    let mut stride = 0usize;
-    let mut rows = 0u32;
-    region.write_incremental(|buffer, width, height| {
-        pixels = buffer.as_mut_ptr();
-        stride = width as usize;
-        rows = height;
-    });
-    *out_pixels = pixels;
-    *out_stride = stride;
-    *out_rows = rows;
+    let buffer = entry.1.take_back_incremental();
+    let (ptr, width, height) = (buffer.as_ptr() as *mut u32, entry.1.width(), entry.1.height());
+    surface.pending.push((handle, buffer));
+    *out_pixels = ptr;
+    *out_stride = width as usize;
+    *out_rows = height;
+    CloverResult::Ok
+}
+
+/// Publishes an incremental write and repaints only `(x, y, w, h)`.
+///
+/// Coordinates are in the page's logical pixels, so the host maps the canvas
+/// damage back into its own layout.
+///
+/// # Safety
+/// `surface` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn clover_direct_commit_rect(
+    surface: *mut CloverSurface,
+    handle: u64,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+) -> CloverResult {
+    let Some(surface) = surface.as_mut() else { return CloverResult::NullArgument };
+    let Some(index) = surface.pending.iter().position(|(h, _)| *h == handle) else {
+        return CloverResult::UnknownHandle;
+    };
+    let (_, buffer) = surface.pending.swap_remove(index);
+    let Some(entry) = surface.direct.iter().find(|(h, _)| h.0 == handle) else {
+        return CloverResult::UnknownHandle;
+    };
+    entry.1.publish_back(buffer);
+    surface
+        .surface
+        .invalidate_rect(clover_core::Rect::new(x, y, width.max(1.0), height.max(1.0)));
     CloverResult::Ok
 }
 
