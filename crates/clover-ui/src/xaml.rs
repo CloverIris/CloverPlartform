@@ -112,6 +112,19 @@ pub fn parse_with_styles(
 }
 
 /// Parses with both a stylesheet and a data context for `{Binding key}`.
+/// Parses a fragment, resolving `<Content Source>` against `base`.
+pub fn parse_with_base(
+    source: &str,
+    images: &dyn ImageResolver,
+    base: Option<&std::path::Path>,
+) -> Result<Node, XamlError> {
+    let document = parse_xml(source)?;
+    let sheet = crate::style_sheet::StyleSheet::new();
+    let data = crate::binding::DataContext::new();
+    let context = BuildContext { images, sheet: &sheet, data: &data, base };
+    build(&document, &context, InheritedStyle::default())
+}
+
 pub fn parse_with_data(
     source: &str,
     images: &dyn ImageResolver,

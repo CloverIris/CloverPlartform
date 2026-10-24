@@ -857,6 +857,7 @@ pub unsafe extern "C" fn clover_surface_create_from_cui(
     let Some(mut surface) = Surface::new(node::panel(), width, height, scale) else {
         return std::ptr::null_mut();
     };
+    surface.set_base_dir(Some(base.clone()));
     for (key, relative) in document.resources() {
         let full = base.join(relative);
         if surface
@@ -1027,11 +1028,10 @@ pub unsafe extern "C" fn clover_surface_set_children_xaml(
     ) else {
         return CloverResult::ParseError;
     };
-    let wrapper = format!("<Panel>{markup}</Panel>");
-    let Ok(root) = xaml::parse(&wrapper, &xaml::NoImages) else {
+    let Some(children) = surface.surface.parse_fragment(markup) else {
         return CloverResult::ParseError;
     };
-    if surface.surface.set_children(name, root.children) {
+    if surface.surface.set_children(name, children) {
         CloverResult::Ok
     } else {
         CloverResult::UnknownHandle

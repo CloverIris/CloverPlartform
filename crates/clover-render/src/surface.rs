@@ -201,6 +201,9 @@ pub struct Surface {
     combo: Option<(NodeId, String)>,
     /// Active splitter drag: (splitter node, size at press, pointer at press).
     splitter: Option<(NodeId, f32, f32)>,
+    /// Directory of the page, so fragments parsed later resolve `<Content>` the
+    /// same way the document did.
+    base_dir: Option<std::path::PathBuf>,
     /// Embedded documents, keyed by their resolved path.
     embeds: HashMap<String, crate::embed::EmbeddedDocument>,
     /// Rows of the open popup, in display order.
@@ -226,6 +229,7 @@ impl Surface {
             widget_press: None,
             combo: None,
             splitter: None,
+            base_dir: None,
             embeds: HashMap::new(),
             menu_rows: Vec::new(),
             menu_highlight: 0,
@@ -920,6 +924,19 @@ impl Surface {
         self.tree.set_enabled(name, enabled)
     }
 
+    /// Records the page's directory for later fragment parsing.
+    pub fn set_base_dir(&mut self, base: Option<std::path::PathBuf>) {
+        self.base_dir = base;
+    }
+
+    /// Parses a fragment of markup in the page's context.
+    pub fn parse_fragment(&self, markup: &str) -> Option<Vec<Node>> {
+        let wrapper = format!("<Panel>{markup}</Panel>");
+        clover_ui::xaml::parse_with_base(&wrapper, &clover_ui::xaml::NoImages, self.base_dir.as_deref())
+            .ok()
+            .map(|root| root.children)
+    }
+
     /// Replaces a named node's children, for dynamic lists.
     pub fn set_children(&mut self, name: &str, children: Vec<Node>) -> bool {
         let Some(node) = self.tree.named_mut(name) else { return false };
@@ -938,6 +955,7 @@ impl Surface {
             .parent()
             .map(|dir| dir.to_path_buf())
             .unwrap_or_default();
+        self.base_dir = Some(base.clone());
         for (key, relative) in document.resources() {
             let _ = self
                 .renderer
@@ -1473,7 +1491,13 @@ impl Surface {
                                 last: p.position,
                                 total: clover_core::Point::default(),
                             });
-                            self.pending_actions.push(format!("drag:begin:{}", target.1));
+                            // Absolute position too: a host that wants to drop the
+                            // payload somewhere needs to know where the pointer is,
+                            // and deltas alone cannot say.
+                            self.pending_actions.push(format!(
+                                "drag:begin:{}:{}:{}",
+                                target.1, p.position.x, p.position.y
+                            ));
                         }
                         let focus_target = chain
                             .iter()
@@ -1569,7 +1593,10 @@ impl Surface {
                                 drag.last = p.position;
                                 drag.total.x += dx;
                                 drag.total.y += dy;
-                                let action = format!("drag:move:{}:{}:{}", drag.payload, dx, dy);
+                                let action = format!(
+                                    "drag:move:{}:{}:{}:{}:{}",
+                                    drag.payload, dx, dy, p.position.x, p.position.y
+                                );
                                 self.pending_actions.push(action);
                             }
                         }
@@ -2600,14 +2627,14 @@ mod tests {
         let _ = surface.frame();
 
         surface.dispatch(drag_event(PointerAction::Down, 10.0, 10.0));
-        assert_eq!(surface.take_action().as_deref(), Some("drag:begin:panel"));
+        assert_eq!(surface.take_action().as_deref(), Some("drag:begin:panel:10:10"));
         assert!(surface.is_dragging());
 
         surface.dispatch(drag_event(PointerAction::Move, 14.0, 13.0));
-        assert_eq!(surface.take_action().as_deref(), Some("drag:move:panel:4:3"));
+        assert_eq!(surface.take_action().as_deref(), Some("drag:move:panel:4:3:14:13"));
 
         surface.dispatch(drag_event(PointerAction::Move, 20.0, 20.0));
-        assert_eq!(surface.take_action().as_deref(), Some("drag:move:panel:6:7"));
+        assert_eq!(surface.take_action().as_deref(), Some("drag:move:panel:6:7:20:20"));
 
         surface.dispatch(drag_event(PointerAction::Up, 20.0, 20.0));
         assert_eq!(surface.take_action().as_deref(), Some("drag:end:panel"));
@@ -2633,7 +2660,11 @@ mod tests {
         while let Some(action) = surface.take_action() {
             seen.push(action);
         }
-        assert_eq!(seen, vec!["drag:begin:panel", "drag:end:panel"], "the click action must not also fire");
+        assert_eq!(
+            seen,
+            vec!["drag:begin:panel:10:10", "drag:end:panel"],
+            "the click action must not also fire"
+        );
     }
 
     #[test]
@@ -2935,5 +2966,45 @@ mod damage_tests {
             1,
             "a 40x40 hover must repaint one tile, not the whole surface"
         );
+    }
+}
+
+#[cfg(test)]
+mod docking_tests {
+    use super::*;
+    use clover_ui::node;
+
+    #[test]
+    fn a_fragment_header_parses_its_drag_payload() {
+        let page = clover_ui::xaml::parse(
+            r##"<StackPanel Width="Fill" Height="Fill"><StackPanel x:Name="slot" Width="Fill" Height="Fill"/></StackPanel>"##,
+            &clover_ui::xaml::NoImages,
+        )
+        .unwrap();
+        let mut surface = Surface::new(page, 200.0, 200.0, 1.0).expect("system font required");
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        let markup = "<StackPanel Width=\"Fill\" Height=\"Fill\">\
+            <StackPanel Orientation=\"Horizontal\" Height=\"20\" Drag=\"panel-sizes\">\
+            <TextBlock Text=\"BRUSH SIZE\"/></StackPanel>\
+            <Panel Height=\"40\" Background=\"#202020\"/></StackPanel>";
+        assert!(surface.set_children("slot", surface.parse_fragment(markup).unwrap()));
+        surface.invalidate_all();
+        let _ = surface.frame();
+
+        surface.dispatch(UiEvent::Pointer(clover_ui::PointerEvent {
+            action: clover_ui::PointerAction::Down,
+            position: clover_core::Point::new(20.0, 10.0),
+            button: clover_ui::MouseButton::Left,
+            ..Default::default()
+        }));
+        let action = surface.take_action();
+        assert_eq!(
+            action.as_deref().map(|a| a.starts_with("drag:begin:panel-sizes:")),
+            Some(true),
+            "a drag handle inside a rebuilt fragment must start a drag, got {action:?}"
+        );
+        let _ = node::panel();
     }
 }
