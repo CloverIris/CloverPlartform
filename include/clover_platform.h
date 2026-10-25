@@ -277,6 +277,10 @@ clover_result clover_direct_commit(clover_surface *surface, uint64_t handle);
 clover_result clover_direct_begin_write_incremental(clover_surface *surface, uint64_t handle,
                                                     uint32_t **out_pixels, size_t *out_stride,
                                                     uint32_t *out_rows);
+/* 1 when the overlay (floating panel, popup) claims the point. Hosts that forward
+ * pointer events to something painted underneath must check this first. */
+int32_t clover_surface_overlay_hit(clover_surface *surface, float x, float y);
+
 clover_result clover_direct_commit_rect(clover_surface *surface, uint64_t handle, float x, float y,
                                         float width, float height);
 

@@ -1330,6 +1330,24 @@ impl UiTree {
         self.overlay.as_deref()
     }
 
+    /// True when the overlay claims `point`.
+    ///
+    /// Floating panels and popups live there, and a host that forwards pointer
+    /// events to a canvas underneath has to know when they are in the way —
+    /// otherwise clicks pass through a panel and paint on the artwork.
+    pub fn overlay_claims(&self, point: Point) -> bool {
+        let Some(overlay) = &self.overlay else { return false };
+        // The wrapper is deliberately unsized so absolutely positioned children keep
+        // their coordinates, which also means its own bounds cannot be tested —
+        // walk the children instead.
+        let mut chain = Vec::new();
+        overlay
+            .children
+            .iter()
+            .rev()
+            .any(|child| child.hit_chain_into(point, &mut chain))
+    }
+
     /// Cursor requested by the deepest node under `point` that asks for one.
     pub fn cursor_at(&self, point: Point) -> crate::style::Cursor {
         let chain = self.hit_chain(point);

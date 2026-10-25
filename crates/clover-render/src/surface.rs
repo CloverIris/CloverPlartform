@@ -937,6 +937,11 @@ impl Surface {
         self.tree.set_enabled(name, enabled)
     }
 
+    /// True when the overlay — a floating panel or a popup — is under `point`.
+    pub fn overlay_claims(&self, point: clover_core::Point) -> bool {
+        self.tree.overlay_claims(point)
+    }
+
     /// Records the page's directory for later fragment parsing.
     pub fn set_base_dir(&mut self, base: Option<std::path::PathBuf>) {
         self.base_dir = base;

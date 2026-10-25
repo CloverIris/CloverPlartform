@@ -794,7 +794,12 @@ pub unsafe extern "C" fn clover_surface_set_overlay_cui(
         return CloverResult::ParseError;
     };
     // The wrapper itself must not take hits: it covers the whole viewport and
-    // would swallow every press meant for the page underneath.
+    // would swallow every press meant for the page underneath. It still has to be
+    // viewport-sized, or hit testing stops at the root and never reaches a floating
+    // panel inside it.
+    // Deliberately unsized: giving the wrapper an extent makes it arrange its
+    // absolutely positioned children from the origin, which put floating panels at
+    // (0, 0). Hit testing tests the children directly instead (see overlay_claims).
     let mut root = node::panel().hit_test(false);
     root.children = children;
     surface.surface.set_overlay(Some(root));
@@ -1257,6 +1262,23 @@ pub unsafe extern "C" fn clover_direct_begin_write_incremental(
     *out_stride = width as usize;
     *out_rows = height;
     CloverResult::Ok
+}
+
+/// Returns 1 when the overlay claims `(x, y)`.
+///
+/// A host that sends pointer events to something painted underneath — a canvas in a
+/// direct region — must ask first, or clicks go through floating panels.
+///
+/// # Safety
+/// `surface` must be a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn clover_surface_overlay_hit(
+    surface: *mut CloverSurface,
+    x: f32,
+    y: f32,
+) -> i32 {
+    let Some(surface) = surface.as_ref() else { return 0 };
+    i32::from(surface.surface.overlay_claims(clover_core::Point::new(x, y)))
 }
 
 /// Publishes an incremental write and repaints only `(x, y, w, h)`.
