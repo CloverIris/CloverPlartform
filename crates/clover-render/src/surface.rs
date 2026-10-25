@@ -15,7 +15,7 @@ use rayon::prelude::*;
 use clover_ui::{node::Node, NodeId, RouteEntry, SurfaceHandle, UiEvent, UiTree, View};
 
 use crate::canvas::Canvas;
-use crate::display_list::build;
+
 use crate::renderer::CpuRenderer;
 
 /// Description of a rendered frame, for handing to a native host.
@@ -314,12 +314,17 @@ impl Surface {
         // is built, because the parent only sees their textures.
         self.sync_embeds();
 
-        let list = build(&self.tree, self.tree.scale(), &self.renderer.text, &self.renderer.images);
-        // The tree works in logical pixels; the renderer works in physical ones.
-        // Damage must be converted or hovers repaint the wrong region at >1x.
+        let scale = self.tree.scale();
+        // Page first, then the direct surfaces (the canvas owns its own pixels),
+        // then the overlay so popups and drag feedback sit above all of it.
+        let page = crate::display_list::build_page(
+            &self.tree,
+            scale,
+            &self.renderer.text,
+            &self.renderer.images,
+        );
         let viewport = self.tree.viewport();
         let logical_bounds = Rect::new(0.0, 0.0, viewport.w, viewport.h);
-        let scale = self.tree.scale();
         let damage: Vec<Rect> = self
             .tree
             .take_damage(logical_bounds)
@@ -329,8 +334,16 @@ impl Surface {
         if damage.is_empty() {
             return;
         }
-        self.renderer.render(&list, &damage, Premul::TRANSPARENT);
-        self.composite_direct_surfaces(&list, &damage);
+        self.renderer.render(&page, &damage, Premul::TRANSPARENT);
+        self.composite_direct_surfaces(&page, &damage);
+        if let Some(overlay) = crate::display_list::build_overlay(
+            &self.tree,
+            scale,
+            &self.renderer.text,
+            &self.renderer.images,
+        ) {
+            self.renderer.render_over(&overlay, &damage);
+        }
         self.generation += 1;
     }
 
@@ -1523,7 +1536,18 @@ impl Surface {
                             return Vec::new();
                         }
                         if let Some(drag) = self.drag.take() {
-                            self.pending_actions.push(format!("drag:end:{}", drag.payload));
+                            // The end carries the release position: a drop target is
+                            // where the pointer was let go, not where it last moved.
+                            let release = self
+                                .tree
+                                .hit_chain(p.position)
+                                .is_empty()
+                                .then_some(p.position)
+                                .unwrap_or(p.position);
+                            self.pending_actions.push(format!(
+                                "drag:end:{}:{}:{}",
+                                drag.payload, release.x, release.y
+                            ));
                             self.press_action = None;
                             self.tree.set_pressed(None);
                             return Vec::new();
@@ -1561,7 +1585,18 @@ impl Surface {
                             return Vec::new();
                         }
                         if let Some(drag) = self.drag.take() {
-                            self.pending_actions.push(format!("drag:end:{}", drag.payload));
+                            // The end carries the release position: a drop target is
+                            // where the pointer was let go, not where it last moved.
+                            let release = self
+                                .tree
+                                .hit_chain(p.position)
+                                .is_empty()
+                                .then_some(p.position)
+                                .unwrap_or(p.position);
+                            self.pending_actions.push(format!(
+                                "drag:end:{}:{}:{}",
+                                drag.payload, release.x, release.y
+                            ));
                         }
                         self.press_action = None;
                         self.tree.set_pressed(None);
@@ -2637,7 +2672,7 @@ mod tests {
         assert_eq!(surface.take_action().as_deref(), Some("drag:move:panel:6:7:20:20"));
 
         surface.dispatch(drag_event(PointerAction::Up, 20.0, 20.0));
-        assert_eq!(surface.take_action().as_deref(), Some("drag:end:panel"));
+        assert_eq!(surface.take_action().as_deref(), Some("drag:end:panel:20:20"));
         assert!(!surface.is_dragging());
     }
 
@@ -2662,7 +2697,7 @@ mod tests {
         }
         assert_eq!(
             seen,
-            vec!["drag:begin:panel:10:10", "drag:end:panel"],
+            vec!["drag:begin:panel:10:10", "drag:end:panel:10:10"],
             "the click action must not also fire"
         );
     }

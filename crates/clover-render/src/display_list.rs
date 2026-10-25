@@ -94,6 +94,19 @@ impl DisplayList {
 
 /// Flattens `tree` into a display list at `scale`.
 pub fn build(tree: &UiTree, scale: f32, text: &TextEngine, images: &ImageStore) -> DisplayList {
+    let mut list = build_page(tree, scale, text, images);
+    if let Some(mut overlay) = build_overlay(tree, scale, text, images) {
+        list.cmds.append(&mut overlay.cmds);
+    }
+    list
+}
+
+/// The page without its overlay.
+///
+/// Kept separate because a direct surface is composited between the two: the
+/// canvas belongs above the page but *below* popups and drag feedback, and a
+/// single list would put the canvas above both.
+pub fn build_page(tree: &UiTree, scale: f32, text: &TextEngine, images: &ImageStore) -> DisplayList {
     let scale = scale.max(0.01);
     let width = (tree.viewport().w * scale).round().max(1.0) as u32;
     let height = (tree.viewport().h * scale).round().max(1.0) as u32;
@@ -101,11 +114,20 @@ pub fn build(tree: &UiTree, scale: f32, text: &TextEngine, images: &ImageStore) 
 
     let mut cmds = Vec::new();
     walk(tree.root(), scale, canvas, &mut cmds, text, images);
-    // The overlay paints last so popups are never clipped by their host.
-    if let Some(overlay) = tree.overlay() {
-        walk(overlay, scale, canvas, &mut cmds, text, images);
-    }
     DisplayList { cmds, width, height, scale }
+}
+
+/// The overlay on its own, for painting above a composited direct surface.
+pub fn build_overlay(tree: &UiTree, scale: f32, text: &TextEngine, images: &ImageStore) -> Option<DisplayList> {
+    let overlay = tree.overlay()?;
+    let scale = scale.max(0.01);
+    let width = (tree.viewport().w * scale).round().max(1.0) as u32;
+    let height = (tree.viewport().h * scale).round().max(1.0) as u32;
+    let canvas = Rect::new(0.0, 0.0, width as f32, height as f32);
+
+    let mut cmds = Vec::new();
+    walk(overlay, scale, canvas, &mut cmds, text, images);
+    Some(DisplayList { cmds, width, height, scale })
 }
 
 fn walk(

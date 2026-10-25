@@ -69,6 +69,45 @@ impl CpuRenderer {
         self.render(&list, damage, clear);
     }
 
+    /// Rasterises `list` on top of what is already in the canvas.
+    ///
+    /// Used for the overlay, which must land above a composited direct surface
+    /// without erasing it: `render` clears each tile first.
+    pub fn render_over(&mut self, list: &DisplayList, damage: &[Rect]) {
+        if self.canvas.width != list.width || self.canvas.height != list.height {
+            self.resize(list.width, list.height);
+        }
+        let bounds = Rect::new(0.0, 0.0, self.canvas.width as f32, self.canvas.height as f32);
+        let mut tiles: Vec<Rect> = Vec::new();
+        for rect in damage {
+            let clipped = rect.snap_out().intersect(bounds);
+            if !clipped.is_empty() {
+                tiles.extend(split_tiles(clipped, TILE_EDGE));
+            }
+        }
+        if tiles.is_empty() {
+            return;
+        }
+        let rendered: Vec<(Rect, Canvas)> = tiles
+            .par_iter()
+            .map(|tile| (*tile, render_tile(list, *tile, Premul::TRANSPARENT)))
+            .collect();
+        for (rect, tile) in rendered {
+            let tile_w = tile.width as usize;
+            let tile_h = tile.height as usize;
+            let source = tile.data();
+            for row in 0..tile_h {
+                for col in 0..tile_w {
+                    let color = Premul(source[row * tile_w + col]);
+                    if color.a() == 0 {
+                        continue;
+                    }
+                    self.canvas.blend(rect.x as i32 + col as i32, rect.y as i32 + row as i32, color, bounds);
+                }
+            }
+        }
+    }
+
     /// Rasterises `list` into the damaged regions.
     ///
     /// `damage` is in physical pixels; an empty slice renders nothing.

@@ -788,7 +788,15 @@ pub unsafe extern "C" fn clover_surface_set_overlay_cui(
         return CloverResult::NullArgument;
     }
     let Ok(markup) = CStr::from_ptr(xaml_utf8).to_str() else { return CloverResult::ParseError };
-    let Ok(root) = xaml::parse(markup, &xaml::NoImages) else { return CloverResult::ParseError };
+    // Parsed in the page's context so an overlay may embed documents too, which is
+    // how floating panels work.
+    let Some(children) = surface.surface.parse_fragment(markup) else {
+        return CloverResult::ParseError;
+    };
+    // The wrapper itself must not take hits: it covers the whole viewport and
+    // would swallow every press meant for the page underneath.
+    let mut root = node::panel().hit_test(false);
+    root.children = children;
     surface.surface.set_overlay(Some(root));
     CloverResult::Ok
 }
