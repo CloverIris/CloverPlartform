@@ -1,5 +1,7 @@
 # CloverPlatform
 
+支持XAML与声明式UI的跨平台语言无关应用程序框架
+
 A cross-platform UI and rendering framework written in Rust, with a CPU-first
 renderer and a C ABI for native hosts. It is the UI substrate for
 [CloverPic](https://github.com/CloverIris/CloverPic) and is developed as its own
